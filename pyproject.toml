@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-subtitle-grounding"
-version = "0.1.0"
-description = "Ark video subtitle extraction with timestamps and spatial grounding"
+version = "0.2.0"
+description = "Video subtitle extraction, translation, layout and MediaKit rendering"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.11,<3",
   "httpx>=0.28,<1",
+  "Pillow>=11,<13",
   "byteplus-python-sdk-v2[ark]>=3.0.58,<4",
 ]
 

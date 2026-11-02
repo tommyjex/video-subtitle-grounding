@@ -11,7 +11,7 @@ class ConfigurationError(ValueError):
 
 
 class Settings(BaseModel):
-    """Only extraction settings. Environment loading is explicit, never reads .env."""
+    """Subtitle backend settings. Environment loading is explicit, never reads .env."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -34,6 +34,12 @@ class Settings(BaseModel):
     composer_timeout_seconds: int = Field(default=900, gt=0)
     service_api_key: SecretStr | None = None
     max_concurrent_extractions: int = Field(default=1, gt=0)
+    max_concurrent_translations: int = Field(default=1, gt=0)
+    max_concurrent_render_requests: int = Field(default=1, gt=0)
+    mediakit_api_key: SecretStr | None = None
+    mediakit_base_url: str = "https://mediakit.cn-beijing.volces.com"
+    mediakit_multitrack_poll_interval_seconds: int = Field(default=3, gt=0)
+    mediakit_multitrack_timeout_seconds: int = Field(default=1800, gt=0)
     tls_enabled: bool = False
     tls_endpoint: str = "https://tls-cn-beijing.volces.com"
     tls_project_id: str = ""
@@ -50,7 +56,7 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def validate_nonempty_secrets(self) -> Settings:
-        for name in ("ark_api_key", "service_api_key", "tls_access_key_id", "tls_secret_access_key"):
+        for name in ("ark_api_key", "service_api_key", "mediakit_api_key", "tls_access_key_id", "tls_secret_access_key"):
             value = getattr(self, name)
             if value is not None and not value.get_secret_value().strip():
                 raise ValueError(f"{name} must not be blank")
@@ -64,7 +70,7 @@ class Settings(BaseModel):
             if name.upper() in os.environ
         }
         # Unconfigured optional secrets in .env.example are represented as None.
-        for name in ("ark_api_key", "service_api_key", "tls_access_key_id", "tls_secret_access_key"):
+        for name in ("ark_api_key", "service_api_key", "mediakit_api_key", "tls_access_key_id", "tls_secret_access_key"):
             if name in values and not values[name].strip():
                 del values[name]
         if "APP_ENV" in os.environ:
@@ -74,6 +80,10 @@ class Settings(BaseModel):
     def require_modelark_config(self) -> None:
         if self.ark_api_key is None:
             raise ConfigurationError("ARK_API_KEY is required.")
+
+    def require_mediakit_config(self) -> None:
+        if self.mediakit_api_key is None:
+            raise ConfigurationError("MEDIAKIT_API_KEY is required.")
 
     def require_server_config(self) -> None:
         self.require_modelark_config()

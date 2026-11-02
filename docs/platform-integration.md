@@ -1,15 +1,15 @@
 # AD-Creativity 集成与发布
 
-平台保留用户鉴权、资产下载、翻译工作区、任务持久化及 TLS 生命周期。原 `backend.app.services.video_subtitle_grounding` 路径成为配置和日志注入层，实际提取逻辑由本包执行。平台传入 prepared video 时不需要额外网络传输。
+平台保留用户鉴权、资产下载、翻译工作区、任务持久化及 TLS 生命周期。提取和翻译路径成为配置和日志注入层；排版和 MediaKit 多轨客户端也由本包提供。平台传入 prepared video 时不需要额外网络传输。平台渲染服务继续负责供应商任务持久化、恢复轮询、资产签名和成片入库。
 
-首版使用固定 wheel 作为部署依赖，既不依赖 GitHub 登录态，也不要求生产服务器存在本地 standalone 目录：
+当前使用固定 wheel 作为部署依赖，既不依赖 GitHub 登录态，也不要求生产服务器存在本地 standalone 目录：
 
 ```text
 requirements.txt
-└── ./vendor/video_subtitle_grounding-0.1.0-py3-none-any.whl
+└── ./vendor/video_subtitle_grounding-0.2.0-py3-none-any.whl
 ```
 
-## 更新提取包
+## 更新字幕包
 
 1. 在独立仓库修改代码、提升版本，运行离线测试并构建：
 
@@ -39,4 +39,6 @@ requirements.txt
 
 ## 仓库发布
 
-本地仓库初始化不复制原平台历史。建议名称 `video-subtitle-grounding`，可见性 private。提交前检查仅包含 README、配置示例、src、合成测试和构建定义。不要提交 `.env`、运行日志、用户视频或调试模型原文。
+仓库已发布为 https://github.com/tommyjex/video-subtitle-grounding ，可见性 private。本地仓库初始化不复制原平台历史。提交前检查仅包含文档、配置示例、src、离线测试/OFL 字体和构建定义。不要提交 `.env`、运行日志、用户视频或调试模型原文。
+
+0.2.0 需同时部署以下平台适配层：`modelark_subtitle_translation.py`、`subtitle_translation_layout.py` 和 `mediakit_multitrack.py`。多轨编辑器也复用此客户端，因此发布前同时运行平台多轨测试。

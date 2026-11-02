@@ -15,7 +15,8 @@ _FIELDS = frozenset({
     "display_height", "video_duration_ms", "subtitle_count", "input_tokens",
     "output_tokens", "total_tokens", "provider_request_id", "invalid_segment_count",
     "style_fallback_counts", "phase", "error_code", "error_stage", "error_type",
-    "provider_code", "response_length",
+    "provider_code", "response_length", "segment_count", "failed_count",
+    "provider_task_id", "operation",
 })
 
 
