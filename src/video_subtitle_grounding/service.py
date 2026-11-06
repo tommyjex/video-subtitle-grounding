@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from time import monotonic
@@ -50,6 +50,7 @@ class VideoSubtitleGroundingProvider(Protocol):
         video_path: Path,
         *,
         sampling_fps: float,
+        on_file_uploaded: Callable[[str], Awaitable[None]] | None = None,
     ) -> ModelArkVideoSubtitleGroundingResult: ...
 
 
@@ -92,16 +93,20 @@ class VideoSubtitleGroundingService:
         prepared: PreparedRemoteVideo,
         *,
         sampling_fps: float = VIDEO_SUBTITLE_GROUNDING_DEFAULT_SAMPLING_FPS,
+        on_file_uploaded: Callable[[str], Awaitable[None]] | None = None,
     ) -> VideoSubtitleGroundingResponse:
         """Extract an authorized, safely prepared video without owning its path.
 
         Callers enforce their route's permissions and input limits, prepare the
         display metadata, and retain local-file cleanup responsibility. Provider
         Files cleanup, validation, safe errors and logging remain shared here.
+        The optional upload hook is awaited before provider processing starts;
+        hook failure stops inference and still triggers provider Files cleanup.
         """
         return await self._extract(
             _borrow_prepared_video(prepared),
             sampling_fps=sampling_fps,
+            on_file_uploaded=on_file_uploaded,
         )
 
     async def _extract(
@@ -109,6 +114,7 @@ class VideoSubtitleGroundingService:
         source: AbstractAsyncContextManager[PreparedRemoteVideo],
         *,
         sampling_fps: float,
+        on_file_uploaded: Callable[[str], Awaitable[None]] | None = None,
     ) -> VideoSubtitleGroundingResponse:
         started_at = self._clock()
         self._log_event(
@@ -122,9 +128,15 @@ class VideoSubtitleGroundingService:
         result: ModelArkVideoSubtitleGroundingResult | None = None
         try:
             async with source as prepared:
+                upload_options = (
+                    {"on_file_uploaded": on_file_uploaded}
+                    if on_file_uploaded is not None
+                    else {}
+                )
                 result = await self.provider.ground_subtitles(
                     prepared.path,
                     sampling_fps=sampling_fps,
+                    **upload_options,
                 )
                 validation = validate_and_convert_subtitles(
                     result,

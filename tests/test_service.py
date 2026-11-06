@@ -103,3 +103,25 @@ def test_owned_preparation_cleans_after_cancellation(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(service.run(VideoSubtitleGroundingRequest(video_url="https://example.test/input.mp4")))
     assert not path.exists()
+
+
+def test_extract_forwards_upload_hook_and_waits_for_it(tmp_path):
+    path = tmp_path / "input.mp4"
+    path.write_bytes(b"video")
+    recorded = []
+
+    class TrackingProvider(Provider):
+        async def ground_subtitles(self, path, *, sampling_fps, on_file_uploaded):
+            await on_file_uploaded("file-service")
+            assert recorded == ["file-service"]
+            return await super().ground_subtitles(path, sampling_fps=sampling_fps)
+
+    async def uploaded(file_id):
+        await asyncio.sleep(0)
+        recorded.append(file_id)
+
+    service = VideoSubtitleGroundingService(
+        settings=Settings(), provider=TrackingProvider()
+    )
+    asyncio.run(service.extract(prepared(path), on_file_uploaded=uploaded))
+    assert recorded == ["file-service"]

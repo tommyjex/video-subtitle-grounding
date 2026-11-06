@@ -6,7 +6,7 @@
 
 ```text
 requirements.txt
-└── ./vendor/video_subtitle_grounding-0.2.0-py3-none-any.whl
+└── ./vendor/video_subtitle_grounding-0.2.1-py3-none-any.whl
 ```
 
 ## 更新字幕包
@@ -42,3 +42,20 @@ requirements.txt
 仓库已发布为 https://github.com/tommyjex/video-subtitle-grounding ，可见性 private。本地仓库初始化不复制原平台历史。提交前检查仅包含文档、配置示例、src、离线测试/OFL 字体和构建定义。不要提交 `.env`、运行日志、用户视频或调试模型原文。
 
 0.2.0 需同时部署以下平台适配层：`modelark_subtitle_translation.py`、`subtitle_translation_layout.py` 和 `mediakit_multitrack.py`。多轨编辑器也复用此客户端，因此发布前同时运行平台多轨测试。
+
+0.2.1 平台提取任务传入异步 `on_file_uploaded(file_id)`，在上传成功后立即将 ID 和时间写入该任务的 `input_snapshot.provider_file_id` 与 `provider_file_uploaded_at`，并向 TLS 记录 `subtitle_translation.file_uploaded` 事件（`task_id`、`workspace_id`、`provider_file_id`）。保存使用最新任务快照，完成/失败/重启保留关联；重试任务记录新的文件 ID。回调持久化失败时停止模型请求并清理供应商文件。没有数据库迁移。
+
+按任务查询关联：
+
+```sql
+SELECT id AS task_id,
+       JSON_UNQUOTE(JSON_EXTRACT(input_snapshot, '$.provider_file_id')) AS file_id,
+       JSON_UNQUOTE(JSON_EXTRACT(input_snapshot, '$.provider_file_uploaded_at')) AS uploaded_at
+FROM tool_tasks
+WHERE type = 'video_subtitle_translation'
+  AND JSON_EXTRACT(input_snapshot, '$.provider_file_id') IS NOT NULL
+ORDER BY created_at DESC
+LIMIT 20;
+```
+
+上传时间采用带 UTC 偏移的 ISO 8601 格式，展示时转换为北京时间。历史任务不会补造关联，文件 ID 也不代表供应商文件仍然存在。

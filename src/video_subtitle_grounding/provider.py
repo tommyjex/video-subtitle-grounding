@@ -262,6 +262,7 @@ class ModelArkVideoSubtitleGroundingAdapter:
         video_path: Path,
         *,
         sampling_fps: float,
+        on_file_uploaded: Callable[[str], Awaitable[None]] | None = None,
     ) -> ModelArkVideoSubtitleGroundingResult:
         provider_file_id: str | None = None
         primary_error: BaseException | None = None
@@ -270,6 +271,8 @@ class ModelArkVideoSubtitleGroundingAdapter:
         try:
             uploaded = await self._upload(video_path, sampling_fps=sampling_fps)
             provider_file_id = self._required_file_id(uploaded)
+            if on_file_uploaded is not None:
+                await on_file_uploaded(provider_file_id)
             await self._wait_until_active(uploaded, provider_file_id)
             raw_response = await self._create_response(provider_file_id)
             result = self._parse_response(raw_response)

@@ -645,3 +645,84 @@ def test_ground_subtitles_attaches_cleanup_failure_to_primary_error(
     assert error.phase == VideoSubtitleGroundingErrorPhase.RESPONSES
     assert error.cleanup_error is not None
     assert error.cleanup_error.phase == VideoSubtitleGroundingErrorPhase.CLEANUP
+
+
+@pytest.mark.parametrize("failure", ["none", "processing", "responses", "cancel", "cleanup"])
+def test_upload_hook_runs_before_processing_and_survives_later_failure(
+    tmp_path, failure,
+):
+    path = tmp_path / "input.mp4"
+    path.write_bytes(b"video")
+    files = FakeFilesClient(
+        create_result=SimpleNamespace(id="file-tracked", status="processing"),
+        retrieve_results=[SimpleNamespace(
+            id="file-tracked", status="failed" if failure == "processing" else "active"
+        )],
+        delete_result=RuntimeError("delete failed") if failure == "cleanup" else None,
+    )
+    response = (
+        asyncio.CancelledError() if failure == "cancel"
+        else RuntimeError("model failed") if failure == "responses"
+        else FakeRawResponse(_payload())
+    )
+    adapter, responses = _adapter(files=files, response=response)
+    recorded = []
+
+    async def uploaded(file_id):
+        assert files.retrieve_calls == responses.calls == files.delete_calls == []
+        recorded.append(file_id)
+
+    async def run():
+        return await adapter.ground_subtitles(
+            path, sampling_fps=2, on_file_uploaded=uploaded
+        )
+
+    if failure in {"processing", "responses"}:
+        with pytest.raises(VideoSubtitleGroundingProviderError):
+            asyncio.run(run())
+    elif failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run())
+    else:
+        result = asyncio.run(run())
+        assert (result.cleanup_error is not None) == (failure == "cleanup")
+    assert recorded == ["file-tracked"]
+    assert files.delete_calls[0][0] == "file-tracked"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_upload_hook_failure_stops_processing_but_still_cleans_file(tmp_path, cancel):
+    path = tmp_path / "input.mp4"
+    path.write_bytes(b"video")
+    files = FakeFilesClient(
+        create_result=SimpleNamespace(id="file-hook-failed", status="processing")
+    )
+    adapter, responses = _adapter(files=files, response=FakeRawResponse(_payload()))
+
+    async def uploaded(file_id):
+        if cancel:
+            raise asyncio.CancelledError()
+        raise RuntimeError("database unavailable")
+
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+        asyncio.run(adapter.ground_subtitles(
+            path, sampling_fps=2, on_file_uploaded=uploaded
+        ))
+    assert files.retrieve_calls == responses.calls == []
+    assert files.delete_calls[0][0] == "file-hook-failed"
+
+
+@pytest.mark.parametrize("upload", [RuntimeError("upload failed"), {"status": "active"}])
+def test_failed_upload_does_not_call_upload_hook(tmp_path, upload):
+    path = tmp_path / "input.mp4"
+    path.write_bytes(b"video")
+    files = FakeFilesClient(create_result=upload)
+    adapter, _ = _adapter(files=files, response=FakeRawResponse(_payload()))
+
+    async def uploaded(file_id):
+        pytest.fail("failed upload must not record a file")
+
+    with pytest.raises(VideoSubtitleGroundingProviderError):
+        asyncio.run(adapter.ground_subtitles(
+            path, sampling_fps=2, on_file_uploaded=uploaded
+        ))

@@ -1,6 +1,6 @@
 # Video subtitles — 提取、翻译与压制
 
-基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.2.0**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.2.1**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
 
 ## 已有能力
 
@@ -52,6 +52,10 @@ result = asyncio.run(main())
 ```
 
 对于业务端已下载的视频，可以构造 `media.PreparedRemoteVideo` 调用 `service.extract(prepared)`；文件仍由调用方清理。可通过 `provider`、`preparer`、`event_logger` 和 `tls_only_logger` 注入现有运行时。
+
+0.2.1 支持 `await service.extract(prepared, on_file_uploaded=save_file_id)`。
+`save_file_id` 是接受一个 `file_id: str` 的异步函数，上传成功后、轮询和模型请求前调用并等待完成，业务端可在闭包中关联自己的任务 ID 并持久化。
+回调失败或取消会停止识别，仍执行 Files 清理。后续识别失败不会撤销已保存的关联；供应商文件在处理后仍会 best-effort 删除，保存的 ID 用于追踪，不代表文件仍可下载。独立 HTTP 提取接口保持原有响应契约，不承担业务任务持久化。
 
 `Settings()` 不加载环境；`Settings.from_environment()` 从进程环境加载。包不会自动寻找父目录 `.env`，因此不会读取其他项目的生产数据库或密钥。
 
@@ -108,9 +112,9 @@ curl http://127.0.0.1:8010/v1/subtitles/extract \
 ## Docker
 
 ```bash
-docker build -t video-subtitle-grounding:0.2.0 .
+docker build -t video-subtitle-grounding:0.2.1 .
 docker run --rm --env-file .env -p 127.0.0.1:8010:8010 \
-  video-subtitle-grounding:0.2.0
+  video-subtitle-grounding:0.2.1
 ```
 
 容器采用非 root 用户，包含 FFprobe。本次拆分未执行 Docker 镜像构建或生产部署。
@@ -126,7 +130,7 @@ python -m build
 
 所有默认测试使用离线 provider 和 HTTP fixture，不访问业务数据库，不执行付费模型调用。排版测试使用 OFL 字体与真实 FreeType 测量。测试证明契约、清理、鉴权和兼容性，不代替真实 OCR、翻译和成片渲染质量验收。
 
-修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。当前平台使用 `video_subtitle_grounding-0.2.0-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。
+修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。当前平台使用 `video_subtitle_grounding-0.2.1-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。
 
 ## 来源与边界
 
