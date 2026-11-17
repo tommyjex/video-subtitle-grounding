@@ -7,7 +7,7 @@ import logging
 from dataclasses import asdict
 from time import monotonic
 
-from .layout import compile_subtitle_project
+from .layout import SubtitleLayoutError, compile_subtitle_project
 from .logging import log_event
 from .mediakit import MediaKitMultiTrackClient
 
@@ -15,14 +15,30 @@ logger = logging.getLogger(__name__)
 
 
 class SubtitleRenderService:
-    def __init__(self, settings=None, *, client=None, compiler=None, event_logger=None):
+    def __init__(self, settings=None, *, client=None, compiler=None, event_logger=None,
+                 layer_materializer=None):
         self.client = client if client is not None else MediaKitMultiTrackClient(settings)
         self.compiler = compiler or compile_subtitle_project
         self.event_logger = event_logger or log_event
+        self.layer_materializer = layer_materializer
 
     async def submit(self, segments, video, *, idempotency_key):
         started = monotonic()
         compiled = await asyncio.to_thread(self.compiler, segments, video)
+        from .product_layout import materialize_layers
+
+        try:
+            await materialize_layers(compiled, self.layer_materializer)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - no unresolved source can reach the provider
+            compiled = await asyncio.to_thread(
+                self.compiler, [{**s, "product_names_enabled": False} for s in segments], video)
+            if compiled.get("layers"):
+                raise SubtitleLayoutError("product_layer_materialization_unavailable") from None
+            compiled.setdefault("warnings", []).append("product_layer_materialization_unavailable")
+            for summary in compiled.get("layouts", {}).values():
+                summary.setdefault("warnings", []).append("product_layer_materialization_unavailable")
         task = await self.client.submit(
             project=compiled["project"], idempotency_key=idempotency_key,
         )

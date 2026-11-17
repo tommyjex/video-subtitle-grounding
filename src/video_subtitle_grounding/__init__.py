@@ -1,6 +1,6 @@
 """Platform-independent subtitle extraction, translation and rendering."""
 
-__version__ = "0.2.1"
+__version__ = "0.3.1"
 
 from .config import Settings
 from .schemas import VideoSubtitleGroundingRequest, VideoSubtitleGroundingResponse

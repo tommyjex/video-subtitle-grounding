@@ -35,11 +35,11 @@ CENTURY_GOTHIC_URL = (
     "https://xujianhua-utils.tos-cn-beijing.volces.com/ECOVACS/centurygothic.ttf"
 )
 CENTURY_GOTHIC_BOLD_URL = "https://xujianhua-utils.tos-cn-beijing.volces.com/CenturyGothic/centurygothic_bold.ttf"
-DEFAULT_FONT = "CenturyGothicBold"
+DEFAULT_FONT = "CenturyGothic"
 FALLBACK_FONT_ID = "ALi_PuHui"
 DEFAULT_PANEL_COLOR = "#33333359"  # 35% opacity, 65% transparent.
 # Bump when automatic rendering changes so unchanged drafts can be rendered anew.
-LAYOUT_VERSION = "single-line-adaptive-panel35-v1"
+LAYOUT_VERSION = "single-line-adaptive-panel35-product-font-v3"
 # SY_Black is the existing editor's Source Han Sans preset. Send an explicit,
 # versioned file URL, not the opaque preset ID whose binary version is unknown.
 FONT_RESOURCES = {
@@ -47,6 +47,8 @@ FONT_RESOURCES = {
     "SY_Black_JP": f"{_SOURCE_HAN_ROOT}/JP/SourceHanSansJP-Regular.otf",
     "CenturyGothic": CENTURY_GOTHIC_URL,
     "CenturyGothicBold": CENTURY_GOTHIC_BOLD_URL,
+    "AvenirLTStdBlack": "https://xujianhua-utils.tos-cn-beijing.volces.com/ECOVACS/AvenirLTStd-Black.otf",
+    "AvenirLTStdLight": "https://xujianhua-utils.tos-cn-beijing.volces.com/ECOVACS/AvenirLTStd-Light.otf",
 }
 MAX_SEGMENTS = 500  # Application/workspace boundary, NOT provider capacity.
 MAX_TEXT_LENGTH = 4000  # Same reviewed-draft boundary.
@@ -155,6 +157,19 @@ def _allowed_font_url(url: str) -> bool:
     # This compiler does not download arbitrary user URLs. New resources must
     # be registered by the server; this prevents a new SSRF fetch path.
     return url in FONT_RESOURCES.values()
+
+
+def _resolve_font(segment: dict, style: Mapping) -> tuple[str, bool]:
+    """Resolve the measurement file and synthetic bold for preset fallback."""
+    manual = style.get("font")
+    automatic_headline = not manual and segment.get("visual_role") == "headline"
+    selected = manual or ("CenturyGothicBold" if automatic_headline else DEFAULT_FONT)
+    if not isinstance(selected, str):
+        raise SubtitleLayoutError("font_resource_unavailable")
+    url = FONT_RESOURCES.get(selected, selected)
+    if not _allowed_font_url(url):
+        raise SubtitleLayoutError("font_resource_unavailable")
+    return url, automatic_headline
 
 
 @lru_cache(maxsize=8)
@@ -406,12 +421,7 @@ def _layout(
     bbox = _bbox(segment, width, height)
     original_bbox = bbox
     box_height = bbox[3] - bbox[1]
-    selected = style.get("font") or DEFAULT_FONT
-    if not isinstance(selected, str):
-        raise SubtitleLayoutError("font_resource_unavailable")
-    url = FONT_RESOURCES.get(selected, selected)
-    if not isinstance(url, str) or not _allowed_font_url(url):
-        raise SubtitleLayoutError("font_resource_unavailable")
+    url, fallback_bold = _resolve_font(segment, style)
     resource = _load_font_resource(url)
     missing = sorted(
         {ord(c) for c in text if not c.isspace() and ord(c) not in resource.codepoints}
@@ -494,7 +504,7 @@ def _layout(
         "font_size": effective,
         "font_color": color,
         "background_color": panel,
-        "bold": False,
+        "bold": bool(missing) and fallback_bold,
         "italic": False,
         "underline": False,
         "line_max_width": -1,
@@ -547,6 +557,9 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
         raise SubtitleLayoutError("invalid_compiler_input")
     if len(segments) > MAX_SEGMENTS:
         raise SubtitleLayoutError("segment_capacity_exceeded")
+    from .product_names import contextual_segments
+
+    segments = contextual_segments(segments)
     width, height = _display_size(video)
     duration = _integer(video.get("duration_ms"), "invalid_video_duration")
     if duration <= 0:
@@ -632,12 +645,26 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
             raise SubtitleLayoutError(exc.code, segment_id) from None
         entries.append((clipped_start, clipped_end, index, segment, box))
     limits = _horizontal_limits(entries, width)
+    layers = {}
     for clipped_start, clipped_end, index, segment, _ in entries:
         segment_id = segment["segment_id"]
         try:
-            element, summary = _layout(
-                segment, video, width, height, limits[segment_id]
-            )
+            from .product_names import effective_mentions
+
+            if effective_mentions(segment):
+                from .product_layout import compile_product_layout
+
+                try:
+                    element, summary, layer = compile_product_layout(
+                        segment, video, width, height, limits[segment_id])
+                    layers[layer["id"]] = layer
+                except SubtitleLayoutError:
+                    element, summary = _layout(segment, video, width, height, limits[segment_id])
+                    summary["warnings"].append("product_layout_unavailable")
+            else:
+                element, summary = _layout(
+                    segment, video, width, height, limits[segment_id]
+                )
         except SubtitleLayoutError as exc:
             raise SubtitleLayoutError(exc.code, segment_id) from None
         if (segment["start_ms"], segment["end_ms"]) != (clipped_start, clipped_end):
@@ -691,4 +718,5 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
             for segment in segments
         },
         "warnings": warnings,
+        "layers": layers,
     }

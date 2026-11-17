@@ -82,6 +82,27 @@ def test_translation_capacity_and_missing_configuration():
         assert client.get("/v1/subtitles/render/task", headers=KEY).status_code == 503
 
 
+def test_product_recognition_auth_capacity_ids_and_no_translation():
+    from unittest.mock import AsyncMock
+
+    translator = AsyncMock()
+    translator.recognize_products.return_value = {"product_mentions": {"one": []}}
+    app = app_for(translator=translator)
+    body = {"segments": [RECORD]}
+    with TestClient(app) as client:
+        url = "/v1/subtitles/recognize-products"
+        assert client.post(url, json=body).status_code == 401
+        assert client.post(url, json={**body, "segment_ids": ["missing"]}, headers=KEY).status_code == 422
+        client.portal.call(app.state.translation_slots.acquire)
+        assert client.post(url, json=body, headers=KEY).status_code == 429
+        client.portal.call(app.state.translation_slots.release)
+        assert client.post(url, json=body, headers=KEY).json() == {"product_mentions": {"one": []}}
+    translator.recognize_products.assert_awaited_once_with([RECORD], segment_ids=["one"])
+    translator.translate.assert_not_called()
+    with TestClient(app_for()) as client:
+        assert client.post(url, json=body, headers=KEY).status_code == 503
+
+
 def test_render_submit_and_poll_wire_contract_without_signed_source_in_response():
     requests = []
 

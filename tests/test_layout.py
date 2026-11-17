@@ -90,7 +90,7 @@ def test_real_metrics_fit_height_then_full_german_width(font_http):
     assert "font_size_reduced" in summary["warnings"]
     assert element["text"] == segment()["translated_text"]
     assert not summary["missing_glyphs"]
-    assert element["font_type"] == font_http[0] == layout.CENTURY_GOTHIC_BOLD_URL
+    assert element["font_type"] == font_http[0] == layout.CENTURY_GOTHIC_URL
     assert summary["font_sha256"] == hashlib.sha256(FONT_PATH.read_bytes()).hexdigest()
     assert element["line_max_width"] == -1
     assert element["typesetting"] == 0
@@ -233,7 +233,7 @@ def test_missing_glyphs_use_provider_preset_without_external_fallback(font_http)
     assert summary["font_sha256"] is None
     assert "font_metrics_unverified" in summary["warnings"]
     assert "preset_glyph_coverage_unverified" in summary["warnings"]
-    assert font_http == [layout.CENTURY_GOTHIC_BOLD_URL]
+    assert font_http == [layout.CENTURY_GOTHIC_URL]
     assert result["project"]["track"][1][0]["font_type"] == "ALi_PuHui"
     assert result["project"]["track"][1][0]["text"] == "Missing 漢字"
 
@@ -277,13 +277,227 @@ def test_celsius_badcase_keeps_literal_text_and_omits_stroke(font_http):
     assert element["text"] == "Temperatura 60℃"
     assert payload["track"][1][0] == element
     assert "border_color" not in element and "border_width" not in element
-    assert font_http == [layout.CENTURY_GOTHIC_BOLD_URL]
+    assert font_http == [layout.CENTURY_GOTHIC_URL]
 
 
-def test_default_bold_font_applies_without_explicit_override():
+def test_default_regular_font_does_not_guess_role_from_language():
     result = layout.compile_subtitle_project([segment()], video(target_language="ja"))
-    assert result["layouts"]["line-1"]["font_type"] == layout.CENTURY_GOTHIC_BOLD_URL
+    assert result["layouts"]["line-1"]["font_type"] == layout.CENTURY_GOTHIC_URL
     assert "font_url_version_unverified" in result["layouts"]["line-1"]["warnings"]
+
+
+def test_automatic_roles_are_resolved_per_line_in_same_block(font_http):
+    roles = ["headline", "body", "footnote", None, "legacy", 123, ["headline"]]
+    sources = [
+        segment(
+            segment_id=f"role-{index}",
+            visual_role=role,
+            block_id="shared",
+            line_index=index,
+            bbox_normalized=[400, 50 + index * 100, 600, 130 + index * 100],
+            start_ms=100 + index,
+            end_ms=1000 + index,
+            alignment=["left", "center", "right"][index % 3],
+            background_color=["#FFFFFF", "#000000", "#777777"][index % 3],
+            translated_text="Long translated title",
+            font_type=layout.CENTURY_GOTHIC_BOLD_URL,
+        )
+        for index, role in enumerate(roles)
+    ]
+    sources.append(
+        segment(
+            segment_id="missing-role",
+            block_id="shared",
+            line_index=len(roles),
+            start_ms=200,
+            end_ms=1100,
+            bbox_normalized=[400, 750, 600, 830],
+            translated_text="Long translated title",
+        )
+    )
+    before = deepcopy(sources)
+    result = layout.compile_subtitle_project(sources, video())
+    assert sources == before
+    elements = {
+        tuple(element["target_time"]): element
+        for track in result["project"]["track"][1:]
+        for element in track
+    }
+    for source in sources:
+        summary = result["layouts"][source["segment_id"]]
+        element = elements[tuple(summary["target_time"])]
+        expected = (
+            layout.CENTURY_GOTHIC_BOLD_URL
+            if source.get("visual_role") == "headline"
+            else layout.CENTURY_GOTHIC_URL
+        )
+        assert element["font_type"] == summary["measurement_font_type"] == expected
+        assert summary["font_type"] == expected
+        assert element["bold"] is False
+        assert element["text"] == source["translated_text"]
+        assert element["line_max_width"] == -1
+        assert element["target_time"] == [source["start_ms"], source["end_ms"]]
+        assert summary["alignment"] == source["alignment"]
+        assert element["align_type"] == layout._ALIGNMENT[source["alignment"]]
+        assert element["background_color"] == summary["background_color"]
+        assert summary["background_color"] == {
+            "#FFFFFF": "#00000000",
+            "#000000": "#00000000",
+            "#777777": "#33333359",
+        }[source["background_color"]]
+        original, rendered = (
+            summary["original_bbox_pixels"],
+            summary["render_bbox_pixels"],
+        )
+        assert original == list(layout._bbox(source, 1280, 720))
+        assert rendered[1::2] == original[1::2]
+        assert rendered[2] - rendered[0] > original[2] - original[0]
+        assert summary["measured_text_width_px"] <= rendered[2] - rendered[0]
+        assert "expanded_background_unverified" in summary["warnings"]
+    assert font_http == [layout.CENTURY_GOTHIC_BOLD_URL, layout.CENTURY_GOTHIC_URL]
+
+
+@pytest.mark.parametrize("role", ["headline", "body", "footnote", None, "legacy"])
+@pytest.mark.parametrize("style", [{}, {"font": None}, {"font": ""}])
+def test_empty_manual_selection_restores_role_default(role, style):
+    result = compile_one(visual_role=role, style=style)
+    expected = (
+        layout.CENTURY_GOTHIC_BOLD_URL
+        if role == "headline"
+        else layout.CENTURY_GOTHIC_URL
+    )
+    assert result["layouts"]["line-1"]["measurement_font_type"] == expected
+    assert result["project"]["track"][1][0]["font_type"] == expected
+    assert result["project"]["track"][1][0]["bold"] is False
+
+
+@pytest.mark.parametrize(
+    "role,font_id",
+    [
+        ("body", "CenturyGothicBold"),
+        ("headline", "CenturyGothic"),
+        ("headline", "SY_Black"),
+        ("headline", "SY_Black_JP"),
+    ],
+)
+@pytest.mark.parametrize("use_url", [False, True])
+def test_explicit_font_id_or_registered_url_wins(role, font_id, use_url, font_http):
+    url = layout.FONT_RESOURCES[font_id]
+    result = compile_one(
+        visual_role=role, style={"font": url if use_url else font_id}
+    )
+    assert font_http == [url]
+    assert result["layouts"]["line-1"]["measurement_font_type"] == url
+    assert result["project"]["track"][1][0]["font_type"] == url
+    assert result["project"]["track"][1][0]["bold"] is False
+
+
+@pytest.mark.parametrize("role", ["headline", "body", "footnote", None, "legacy"])
+@pytest.mark.parametrize(
+    "manual_font", [None, "", "CenturyGothicBold", layout.CENTURY_GOTHIC_URL]
+)
+def test_missing_glyph_fallback_weight_preserves_manual_behavior(
+    role, manual_font, font_http
+):
+    source = segment(
+        visual_role=role,
+        translated_text="Missing 漢字",
+        style={"font": manual_font},
+    )
+    before = deepcopy(source)
+    result = layout.compile_subtitle_project([source], video())
+    assert source == before
+    summary = result["layouts"]["line-1"]
+    element = result["project"]["track"][1][0]
+    expected = layout.FONT_RESOURCES.get(manual_font, manual_font) or (
+        layout.CENTURY_GOTHIC_BOLD_URL
+        if role == "headline"
+        else layout.CENTURY_GOTHIC_URL
+    )
+    assert font_http == [expected]
+    assert summary["measurement_font_type"] == expected
+    assert summary["font_sha256"] is None
+    assert summary["measurement_font_sha256"] is not None
+    assert element["font_type"] == "ALi_PuHui"
+    assert element["bold"] is (not manual_font and role == "headline")
+    assert element["text"] == source["translated_text"]
+    payload = MediaKitMultiTrackClient._normalize_submit_payload(
+        project=result["project"], idempotency_key="role-font-fallback"
+    )
+    assert payload["track"][1][0] == element
+    assert summary["missing_glyphs"] == ["U+5B57", "U+6F22"]
+    for warning in (
+        "missing_glyphs",
+        "font_fallback",
+        "font_metrics_unverified",
+        "preset_glyph_coverage_unverified",
+    ):
+        assert warning in summary["warnings"]
+        assert f"line-1:{warning}" in result["warnings"]
+    assert "real_render_unverified" in result["warnings"]
+
+
+def test_role_font_is_selected_before_all_measurement(monkeypatch):
+    # Distinct deterministic metrics expose measuring with the wrong role font.
+    loaded = []
+
+    class MetricsFont:
+        def __init__(self, size, bold):
+            self.size, self.bold = size, bold
+
+        def getmetrics(self):
+            return (self.size * (2 if self.bold else 1), 0)
+
+        def getlength(self, text):
+            return len(text) * self.size * (3 if self.bold else 1)
+
+        def getbbox(self, text):
+            return (0, 0, self.getlength(text), self.getmetrics()[0])
+
+    class MetricsResource:
+        def __init__(self, url):
+            self.url = url
+            self.sha256 = hashlib.sha256(url.encode()).hexdigest()
+            self.codepoints = frozenset({ord("W")})
+
+        def font(self, size):
+            return MetricsFont(size, self.url == layout.CENTURY_GOTHIC_BOLD_URL)
+
+    def load(url):
+        loaded.append(url)
+        return MetricsResource(url)
+
+    monkeypatch.setattr(layout, "_load_font_resource", load)
+    summaries = {}
+    for role in ("headline", "body"):
+        summaries[role] = compile_one(
+            visual_role=role,
+            bbox_normalized=[400, 200, 600, 300],
+            translated_text="W" * 14,
+            font_type=layout.CENTURY_GOTHIC_BOLD_URL,
+        )["layouts"]["line-1"]
+    assert loaded == [layout.CENTURY_GOTHIC_BOLD_URL, layout.CENTURY_GOTHIC_URL]
+    headline, body = summaries["headline"], summaries["body"]
+    assert headline["estimated_font_size_px"] == 36
+    assert body["estimated_font_size_px"] == 72
+    assert headline["desired_text_width_px"] == 1514
+    assert body["desired_text_width_px"] == 1010
+    assert headline["effective_font_size_px"] == 27
+    assert body["effective_font_size_px"] == 72
+    assert headline["measured_text_width_px"] == 1134
+    assert body["measured_text_width_px"] == 1008
+    assert headline["render_bbox_pixels"] != body["render_bbox_pixels"]
+    assert headline["render_bbox_pixels"] == [66, 144, 1216, 216]
+    assert body["render_bbox_pixels"] == [136, 144, 1146, 216]
+    assert "bbox_expansion_limited" in headline["warnings"]
+    assert "bbox_expansion_limited" not in body["warnings"]
+    for summary in summaries.values():
+        assert summary["original_bbox_pixels"] == [513, 144, 769, 216]
+        assert "bbox_expanded" in summary["warnings"]
+
+
+def test_role_font_layout_version():
+    assert layout.LAYOUT_VERSION == "single-line-adaptive-panel35-product-font-v3"
 
 
 def test_explicit_japanese_font_is_preserved():
@@ -653,7 +867,7 @@ def test_boundary_limit_then_shrink_and_no_regression(alignment):
     assert 64 <= box[0] <= original[0] < original[2] <= box[2] <= 1216
     assert summary["effective_font_size_px"] < summary["estimated_font_size_px"]
     assert "bbox_expansion_limited" in summary["warnings"]
-    resource = layout._load_font_resource(layout.CENTURY_GOTHIC_BOLD_URL)
+    resource = layout._load_font_resource(summary["measurement_font_type"])
     previous = layout._largest_size(
         resource,
         summary["estimated_font_size_px"],

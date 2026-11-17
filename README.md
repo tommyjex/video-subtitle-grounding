@@ -1,6 +1,6 @@
 # Video subtitles — 提取、翻译与压制
 
-基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.2.1**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.3.1**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
 
 ## 已有能力
 
@@ -13,6 +13,7 @@
 - 聚合 JSON 日志和可选 TLS 投递。模型原文默认不记录，显式 debug 时仅发送 TLS。
 - Ark 按字幕 ID 翻译，提供上下文、批次预算、截断恢复和失败 ID 重试。
 - 字幕排版保持逐行独立、纵向范围固定，先横向扩框再缩字号；保留字体测量、缺字回退与颜色策略。
+- 自动字体逐条按 `visual_role` 选择：`headline` 使用 Century Gothic Bold，`body`、`footnote`、空值、缺失或未知角色使用 Century Gothic Regular；人工 `style.font` 覆盖优先。
 - MediaKit 多轨压制提交、任务查询和轮询，保留稳定的幂等 token、原视频音轨和展示尺寸。
 
 当前域名检查与 HTTP 连接各自解析 DNS，尚未实现连接目标 IP 固定；部署端仍应限制对内网及云 metadata 地址的出站访问。本次拆分保留已有下载行为。
@@ -112,9 +113,9 @@ curl http://127.0.0.1:8010/v1/subtitles/extract \
 ## Docker
 
 ```bash
-docker build -t video-subtitle-grounding:0.2.1 .
+docker build -t video-subtitle-grounding:0.3.1 .
 docker run --rm --env-file .env -p 127.0.0.1:8010:8010 \
-  video-subtitle-grounding:0.2.1
+  video-subtitle-grounding:0.3.1
 ```
 
 容器采用非 root 用户，包含 FFprobe。本次拆分未执行 Docker 镜像构建或生产部署。
@@ -130,7 +131,7 @@ python -m build
 
 所有默认测试使用离线 provider 和 HTTP fixture，不访问业务数据库，不执行付费模型调用。排版测试使用 OFL 字体与真实 FreeType 测量。测试证明契约、清理、鉴权和兼容性，不代替真实 OCR、翻译和成片渲染质量验收。
 
-修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。当前平台使用 `video_subtitle_grounding-0.2.1-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。
+修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。0.3.1 对应平台依赖 `video_subtitle_grounding-0.3.1-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。
 
 ## 来源与边界
 
@@ -203,6 +204,7 @@ async def translate_and_submit(segments, clean_video, idempotency_key):
     "translated_text": "Leistungsstarke Reinigung",
     "block_id": "block-1",
     "line_index": 0,
+    "visual_role": "headline",
     "start_ms": 1000,
     "end_ms": 3000,
     "bbox_normalized": [100, 800, 900, 900],
@@ -215,6 +217,33 @@ async def translate_and_submit(segments, clean_video, idempotency_key):
 
 `width`/`height` 必须是展示方向尺寸，bbox 为 0–999 坐标。输入应为时间轴对齐的无字幕视频；压制只叠加译文，不移除原字幕。字体仅下载服务端登记的 URL；需要网络访问字体资源和 MediaKit。默认小字/复杂背景策略保持原平台实现，包括 `#33333359` 底板。
 
+### 0.2.2 角色字体规则
+
+该版排版版本为 `single-line-adaptive-panel35-role-font-v2`；0.3.0 使用 `single-line-adaptive-panel35-product-font-v3` 并保留以下普通文字规则。`style.font` 未设置、为 `null` 或为空时，逐条按当前 `visual_role` 选择实际字体文件，不按 `block_id`、`line_index`、大小写或文本内容推断：
+
+| 角色 | 字体资源 ID | 实际字体文件 |
+| --- | --- | --- |
+| `headline` | `CenturyGothicBold` | `https://xujianhua-utils.tos-cn-beijing.volces.com/CenturyGothic/centurygothic_bold.ttf` |
+| `body`、`footnote`、空值、缺失或未知角色 | `CenturyGothic` | `https://xujianhua-utils.tos-cn-beijing.volces.com/ECOVACS/centurygothic.ttf` |
+
+Regular 文件的真实字重为 Regular，不是 Light/Thin。本地测量和 MediaKit `font_type` 使用同一实际文件，文件字体的文字元素保持 `bold: false`，不再合成加粗。共享文字块中的标题与正文可使用不同字体。
+
+人工 `style.font` 的已有字体资源 ID 或合法字体 URL 保持优先，不批量改变人工选择；清空后恢复自动规则。历史 `font_type` 是派生摘要，不是人工覆盖；重新计算时按新规则选字体并重新测量，不复用旧 Bold 度量。原始 bbox、时间、角色和译文不变。
+
+自动字体缺字时保留现有 `ALi_PuHui` 回退与警告：标题请求 `bold: true`，其余角色请求 `bold: false`。回退字体本地度量及最终合成粗体效果未验证。Regular 文件可读取和离线测试通过均不代表真实 MediaKit 成片字重验收通过。
+
 客户端保存 `task.task_id`、布局和警告，定期调用查询接口；SDK 也可 `await renderer.poll(task_id=...)`。本服务没有工作区或持久化任务队列。相同幂等键用于同一次提交恢复，修改视频或字幕后更换幂等键；真正的去重行为由供应商决定。视频 URL 需在供应商拉取期间有效；接口不返回包含签名源 URL 的编译项目。
 
 翻译/压制请求分别受 `MAX_CONCURRENT_TRANSLATIONS`、`MAX_CONCURRENT_RENDER_REQUESTS` 限制，默认每进程各 1；压制额度约束本服务 HTTP 请求，不限制供应商已提交任务数。鉴权失败返回 401、参数/排版错误返回 422、供应商错误返回 502、未配置能力返回 503、并发不足返回 429。翻译部分失败返回 200 和 `failed_ids`。多个使用者共享同一 API Key 和 MediaKit 账号，任务查询不提供用户级隔离。
+
+### 0.3.0 产品名称与混合字体
+
+翻译前使用完整 72 条添可命名范式识别名称。字典全名优先，未收录型号、规格和组合由模型判断；结构一致的结果直接保留原名并应用字体，无需新增字典。模型失败时保留字典结果及其他字幕翻译，返回逐条警告。独立规格行需要当前同一 `block_id` 内仍有效的型号，修改或排除型号会取消失效的规格标注。OCR 兼容当前仅包含大小写和重复空格；没有证据的字母替换不自动加入别名。
+
+型号使用 `AvenirLTStdBlack`，规格使用 `AvenirLTStdLight`，普通文字仍按角色和人工设置选择字体。实际文件按共同字号、基线绘制整行透明 PNG 和唯一底板。`product_mentions` 使用 Unicode code point `[start,end)`；`product_text_sha256` 绑定最终译文，`product_names_enabled=false` 可关闭一条字幕的产品字体。`text_runs` 提供真实字体 SHA 和测量；图层缓存键包含字体、内容、区间、视频尺寸、布局和字典版本。
+
+独立 SDK 可调用 `await translator.recognize_products(records, segment_ids=[...])`。HTTP `POST /v1/subtitles/recognize-products` 接受 `{"segments":[{"segment_id":"one","text":"FLOOR ONE i5 Lite","block_id":"product","line_index":0}],"segment_ids":["one"]}`，返回产品标注、指纹、警告与 usage；使用相同 `X-API-Key` 和翻译并发限制，不重新翻译正文。
+
+`compile_subtitle_project()` 新增运行时 `layers`（PNG 字节），图片 `source` 暂为 `subtitle-layer:<hash>`。独立压制调用者需向 `SubtitleRenderService(layer_materializer=...)` 注入异步物化函数，将图层写入自己的私有存储并返回有效 HTTPS URL。HTTP 服务默认没有持久化存储；可在 `create_app(renderer=...)` 注入配置好的 renderer。物化未配置或失败时退回普通文字压制，返回 `product_layer_materialization_unavailable`，不会向供应商提交内部标记，也不会声称混合字体成功。平台已注入 TOS 物化和同源鉴权预览，工作区不保存签名 URL。
+
+0.3.1 保留排版版本 `single-line-adaptive-panel35-product-font-v3` 和字典版本 `tineco-names-20261116-v1`。翻译前自动判定型号/规格，异常自动重试一次；平台在保存译文、POST 排版计算及压制前保存时自动判定历史或修改后的名称，并按文本、同块上下文与字典版本复用结果。GET 读取与纯排版函数不调用模型。产品结果只读展示，不要求人工拆分或校验。无数据库迁移，不自动修改历史成片；重新压制才产生新成片。真实模型识别和 MediaKit 成片质量需另行验证，离线字体像素及模拟 HTTP 不能代替这些证据。

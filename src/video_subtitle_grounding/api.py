@@ -16,7 +16,9 @@ from .layout import SubtitleLayoutError
 from .mediakit import MediaKitMultiTrackError
 from .render import SubtitleRenderService
 from .translation import ModelArkSubtitleTranslationAdapter
-from .translation_schemas import SubtitleTranslateRequest, SubtitleRenderRequest
+from .translation_schemas import (
+    SubtitleProductRecognitionRequest, SubtitleTranslateRequest, SubtitleRenderRequest,
+)
 from .logging import JsonFormatter, log_event, tls_only_logger
 from .media import RemoteVideoError
 from .provider import VideoSubtitleGroundingProviderError
@@ -151,6 +153,21 @@ def create_app(
                 ],
                 source_language=payload.source_language,
                 target_language=payload.target_language,
+            )
+
+    @app.post("/v1/subtitles/recognize-products", dependencies=[Depends(authorize)])
+    async def recognize_products(payload: SubtitleProductRecognitionRequest):
+        active = app.state.translator
+        if active is None:
+            raise HTTPException(status_code=503, detail="Translation is not configured.")
+        slots = app.state.translation_slots
+        capacity(slots)
+        async with slots:
+            return await active.recognize_products(
+                [record.model_dump() for record in payload.segments],
+                segment_ids=payload.segment_ids if payload.segment_ids is not None else [
+                    record.segment_id for record in payload.segments
+                ],
             )
 
     def render_error(exc):
