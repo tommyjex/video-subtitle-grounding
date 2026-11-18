@@ -8,15 +8,13 @@ import math
 import re
 import unicodedata
 from collections.abc import Mapping
-from io import BytesIO
-
-from PIL import Image, ImageDraw
 
 from . import layout as base
 from .product_names import CATALOG_VERSION, effective_mentions
+from .raster import draw_layer
 
 
-def compile_product_layout(segment, video, width, height, limits):
+def compile_product_layout(segment, video, width, height, limits, vertical_limits=None):
     text = segment["translated_text"]
     if not isinstance(text, str) or not text.strip():
         raise base.SubtitleLayoutError("missing_translation")
@@ -107,15 +105,28 @@ def compile_product_layout(segment, video, width, height, limits):
     if not upper:
         raise base.SubtitleLayoutError("bbox_below_font_minimum")
     estimated = upper
+    box_origin = original
+    if segment.get("visual_role") == "footnote":
+        requested = style.get("font_size_px")
+        requested = 24 if requested is None else base._number(requested, "invalid_font_size")
+        if requested <= 0:
+            raise base.SubtitleLayoutError("invalid_font_size")
+        upper = max(1, math.floor(requested))
+        box_origin = base._footnote_box(original, math.ceil(measure(upper)[1]),
+                                        vertical_limits or (0, height))
+        box_height = box_origin[3] - box_origin[1]
+        if measure(upper)[1] > box_height:
+            warnings.append("footnote_space_limited")
     if style.get("font_size_px") is not None:
         requested = base._number(style["font_size_px"], "invalid_font_size")
         if requested <= 0:
             raise base.SubtitleLayoutError("invalid_font_size")
         upper = min(upper, max(1, math.floor(requested)))
     desired = math.ceil(measure(upper)[0])
-    box = base._expand_box(original, desired, alignment, limits)
+    box = base._expand_box(box_origin, desired, alignment, limits)
     box_width = box[2] - box[0]
-    effective = largest_fitting(upper, lambda size: measure(size)[0] <= box_width)
+    effective = largest_fitting(upper, lambda size: measure(size)[0] <= box_width
+                                and measure(size)[1] <= box_height)
     if not effective:
         raise base.SubtitleLayoutError("text_cannot_fit_at_minimum_font")
     if box != original:
@@ -128,25 +139,27 @@ def compile_product_layout(segment, video, width, height, limits):
         warnings.append("font_size_small")
     if limits[2]:
         warnings.append("original_bbox_overlap")
-    recommended, color, panel = base._colors(segment, style, warnings)
+    category = base._video_category(video)
+    recommended, color, panel = base._colors(
+        segment, style, warnings, video_category=category
+    )
     measured_width, measured_height, bearing, ascent, positions = measure(effective)
     x = ({"left": 0, "center": (box_width - measured_width) / 2,
           "right": box_width - measured_width}[alignment])
     y = (box_height - measured_height) / 2
     baseline = y + 2 + ascent
-    image = Image.new("RGBA", (box_width, box_height))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((x, y, x + measured_width - 1, y + measured_height - 1), fill=panel)
     for run, (font, advance, _) in zip(runs, positions, strict=True):
         origin = x + 2 - bearing + advance
-        draw.text((origin, baseline), run["text"], font=font, fill=color, anchor="ls")
         run.update({"x_px": origin, "baseline_px": baseline, "font_size_px": effective,
                     "advance_px": font.getlength(run["text"])})
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    content = buffer.getvalue()
+    content, scale = draw_layer((box_width, box_height), runs, resources, color, panel,
+                               (x, y, x + measured_width, y + measured_height))
+    if scale < 4:
+        warnings.append("raster_sampling_limited")
     fingerprint = {"text": text, "runs": runs, "box": box, "video": [width, height],
                    "color": color, "panel": panel, "alignment": alignment,
+                   "video_category": category,
+                   "effective_panel_policy": "transparent" if panel[7:9] == "00" else "panel",
                    "layout_version": base.LAYOUT_VERSION, "catalog_version": CATALOG_VERSION}
     layer_id = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode() + content).hexdigest()
     summary = {
@@ -160,6 +173,7 @@ def compile_product_layout(segment, video, width, height, limits):
         "render_layer_url": None, "product_mentions": mentions,
         "ascent_px": ascent, "descent_px": measured_height - 4 - ascent,
         "warnings": sorted(set(warnings)),
+        "raster_scale": scale,
     }
     element = {"type": "image", "source": f"subtitle-layer:{layer_id}", "extra": [{
         "type": "transform", "pos_x": box[0], "pos_y": box[1], "width": box_width,

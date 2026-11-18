@@ -7,6 +7,7 @@ from collections import Counter
 from time import monotonic
 
 from .config import get_settings
+from .brand_rules import BRAND_RULE_VERSION, filter_brand_records
 from .logging import emit_tls_only_event, log_event
 from .product_names import (
     PRODUCT_CATALOG, catalog_mentions, effective_mentions, protect_names, restore_names,
@@ -156,6 +157,8 @@ def merge_translations(records, requested):
 
 
 class ModelArkSubtitleTranslationAdapter:
+    brand_rules_enabled = True
+
     def __init__(
         self, settings=None, *, client=None, token_budget=6000,
         event_logger=None, tls_only_logger=None,
@@ -178,6 +181,8 @@ class ModelArkSubtitleTranslationAdapter:
         self.recognize_product_names = recognize_product_names
 
     async def recognize_products(self, segments, *, segment_ids):
+        if self.brand_rules_enabled:
+            segments = list(filter_brand_records(segments).kept)
         selected = set(segment_ids)
         mentions = {s["segment_id"]: catalog_mentions(s["text"])
                     for s in segments if s["segment_id"] in selected
@@ -293,6 +298,17 @@ class ModelArkSubtitleTranslationAdapter:
         self, segments, *, segment_ids, source_language, target_language
     ):
         started = monotonic()
+        skipped_ids = []
+        if self.brand_rules_enabled:
+            filtered = filter_brand_records(segments)
+            skipped_ids = [segments[i]["segment_id"] for i in filtered.skipped_indexes]
+            segments = list(filtered.kept)
+            segment_ids = [sid for sid in segment_ids if sid not in skipped_ids]
+            self.event_logger(
+                logger, "subtitle_translation.brand_filtered", outcome="completed",
+                brand_rule_version=BRAND_RULE_VERSION,
+                brand_filtered_count=len(skipped_ids), brand_filter_counts=filtered.counts,
+            )
         selected = set(segment_ids)
         recognition = (await self.recognize_products(segments, segment_ids=segment_ids)
                        if self.recognize_product_names else {
@@ -418,6 +434,7 @@ class ModelArkSubtitleTranslationAdapter:
             "product_mentions": product_mentions,
             "product_text_sha256": fingerprints,
             "warnings": warnings,
+            "skipped_brand_ids": sorted(skipped_ids),
         }
         self.event_logger(
             logger,

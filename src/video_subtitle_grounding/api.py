@@ -193,7 +193,8 @@ def create_app(
         async with slots:
             try:
                 return await active.submit(
-                    payload.segments, payload.video, idempotency_key=payload.idempotency_key,
+                    payload.segments, {**payload.video, "render_mode": payload.render_mode, "crf": payload.crf},
+                    idempotency_key=payload.idempotency_key,
                 )
             except (SubtitleLayoutError, MediaKitMultiTrackError) as exc:
                 raise render_error(exc) from exc

@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Protocol
 
 from .config import Settings, get_settings
+from .brand_rules import BRAND_RULE_VERSION, filter_brand_records
 from .logging import emit_tls_only_event, log_event
 from .schemas import (
     VIDEO_SUBTITLE_GROUNDING_DEFAULT_SAMPLING_FPS,
@@ -30,6 +31,7 @@ from .media import (
 )
 from .validation import (
     VideoSubtitleGroundingValidationError,
+    _parse_bbox,
     validate_and_convert_subtitles,
 )
 
@@ -55,6 +57,9 @@ class VideoSubtitleGroundingProvider(Protocol):
 
 
 class VideoSubtitleGroundingService:
+    brand_rules_enabled = True
+    provider_class = ModelArkVideoSubtitleGroundingAdapter
+
     def __init__(
         self,
         *,
@@ -72,7 +77,7 @@ class VideoSubtitleGroundingService:
             SecureRemoteVideoDownloader(self.settings),
             FFprobeVideoPathInspector(self.settings),
         )
-        self.provider = provider or ModelArkVideoSubtitleGroundingAdapter(
+        self.provider = provider or self.provider_class(
             self.settings
         )
         self._clock = clock
@@ -142,6 +147,22 @@ class VideoSubtitleGroundingService:
                     result,
                     prepared.metadata,
                 )
+            # Use original visual metadata: validation's synthetic fallback blocks
+            # and line indexes are not evidence that a split slogan is one block.
+            filtered = filter_brand_records(result.subtitles) if self.brand_rules_enabled else None
+            skipped_keys = set()
+            for index in filtered.skipped_indexes if filtered else ():
+                s = result.subtitles[index]
+                if not (isinstance(s.text, str) and type(s.start_ms) is int and type(s.end_ms) is int):
+                    continue
+                try:
+                    skipped_keys.add((s.text.strip(), s.start_ms, s.end_ms, _parse_bbox(s.bbox)))
+                except VideoSubtitleGroundingValidationError:
+                    continue
+            effective = [
+                s for s in validation.subtitles
+                if (s.text, s.start_ms, s.end_ms, s.bbox_normalized) not in skipped_keys
+            ]
             response = VideoSubtitleGroundingResponse(
                 model=result.model,
                 video=VideoSubtitleGroundingVideoMetadata(
@@ -150,7 +171,7 @@ class VideoSubtitleGroundingService:
                     duration_ms=prepared.metadata.duration_ms,
                     rotation=prepared.metadata.rotation,
                 ),
-                subtitles=list(validation.subtitles),
+                subtitles=effective,
                 usage=result.usage,
                 latency_ms=_latency_ms(started_at, self._clock()),
             )
@@ -216,6 +237,9 @@ class VideoSubtitleGroundingService:
             provider_request_id=result.request_id,
             invalid_segment_count=validation.stats.invalid_segment_count,
             style_fallback_counts=validation.stats.style_fallback_counts,
+            brand_rule_version=BRAND_RULE_VERSION if self.brand_rules_enabled else None,
+            brand_filtered_count=len(validation.subtitles) - len(effective),
+            brand_filter_counts=filtered.counts if filtered else {},
         )
         return response
 

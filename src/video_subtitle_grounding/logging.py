@@ -17,6 +17,8 @@ _FIELDS = frozenset({
     "style_fallback_counts", "phase", "error_code", "error_stage", "error_type",
     "provider_code", "response_length", "segment_count", "failed_count",
     "provider_task_id", "operation",
+    "brand_rule_version", "brand_filtered_count", "brand_filter_counts",
+    "render_mode", "effective_render_mode", "crf", "video_codec", "encoding_policy_version",
 })
 
 

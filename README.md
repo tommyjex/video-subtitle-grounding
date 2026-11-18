@@ -1,6 +1,10 @@
 # Video subtitles — 提取、翻译与压制
 
-基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.3.1**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.3.8**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+
+0.3.8 支持 `render_mode=png|text`，默认 PNG；CRF 为严格整数 0–30，默认 16。两路及 PNG 失败后的 Text 回退统一提交 H.264 与所选 CRF，省略 `video_bit_rate`、`canvas.background_color` 及原生 Text 的 `background_color`，使用接口默认值。PNG 内部自动/人工底板保持，使用真实字体 4 倍采样，自动脚注为 24px；Text 不生成 PNG 图层，保留非 headline 加粗，产品混排整行字体回退返回 `text_product_font_fallback`。HTTP render 顶层 `crf` 是权威输入；SDK 编译/提交通过 runtime video 的 `crf` 传入。排版版本为 `single-line-png-text-default-background-v8`，编码策略为 `configurable-crf-h264-v3`。接口默认底色、真实成片质量与文件大小仍需单独验收。
+
+0.3.3 统一排除独立品牌 Logo 与固定标语，不区分视频类型或出现位置。提示词排除 `Tineco` Logo 和 `Live Easy. Enjoy Life.`；共享 `brand_rules` 模块仅匹配完整品牌文字，分行标语需要原始视觉块、连续行号及共同重叠时间。产品名称、含品牌名的说明和不完整短语保留，原始模型响应不修改。翻译及名称识别默认复用该规则，品牌内容不进入请求或上下文；只有品牌内容时提取正常返回空列表。规则版本为 `tineco-brand-20261117-v1`，排版版本、底板、字体和几何算法不变。`legacy` 模块仅供平台恢复已经冻结的旧任务，不是视频类型开关。离线测试不代表真实模型或成片质量验收。
 
 ## 已有能力
 
@@ -113,9 +117,9 @@ curl http://127.0.0.1:8010/v1/subtitles/extract \
 ## Docker
 
 ```bash
-docker build -t video-subtitle-grounding:0.3.1 .
+docker build -t video-subtitle-grounding:0.3.8 .
 docker run --rm --env-file .env -p 127.0.0.1:8010:8010 \
-  video-subtitle-grounding:0.3.1
+  video-subtitle-grounding:0.3.8
 ```
 
 容器采用非 root 用户，包含 FFprobe。本次拆分未执行 Docker 镜像构建或生产部署。
@@ -131,7 +135,7 @@ python -m build
 
 所有默认测试使用离线 provider 和 HTTP fixture，不访问业务数据库，不执行付费模型调用。排版测试使用 OFL 字体与真实 FreeType 测量。测试证明契约、清理、鉴权和兼容性，不代替真实 OCR、翻译和成片渲染质量验收。
 
-修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。0.3.1 对应平台依赖 `video_subtitle_grounding-0.3.1-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。
+修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。0.3.8 对应平台依赖 `video_subtitle_grounding-0.3.8-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。先构建 sdist，再从 sdist 构建 wheel；源码导出与 sdist 保持字节一致。
 
 ## 来源与边界
 
@@ -247,3 +251,13 @@ Regular 文件的真实字重为 Regular，不是 Light/Thin。本地测量和 M
 `compile_subtitle_project()` 新增运行时 `layers`（PNG 字节），图片 `source` 暂为 `subtitle-layer:<hash>`。独立压制调用者需向 `SubtitleRenderService(layer_materializer=...)` 注入异步物化函数，将图层写入自己的私有存储并返回有效 HTTPS URL。HTTP 服务默认没有持久化存储；可在 `create_app(renderer=...)` 注入配置好的 renderer。物化未配置或失败时退回普通文字压制，返回 `product_layer_materialization_unavailable`，不会向供应商提交内部标记，也不会声称混合字体成功。平台已注入 TOS 物化和同源鉴权预览，工作区不保存签名 URL。
 
 0.3.1 保留排版版本 `single-line-adaptive-panel35-product-font-v3` 和字典版本 `tineco-names-20261116-v1`。翻译前自动判定型号/规格，异常自动重试一次；平台在保存译文、POST 排版计算及压制前保存时自动判定历史或修改后的名称，并按文本、同块上下文与字典版本复用结果。GET 读取与纯排版函数不调用模型。产品结果只读展示，不要求人工拆分或校验。无数据库迁移，不自动修改历史成片；重新压制才产生新成片。真实模型识别和 MediaKit 成片质量需另行验证，离线字体像素及模拟 HTTP 不能代替这些证据。
+
+## 0.3.2 视频类型策略
+
+排版版本更新为 `single-line-adaptive-panel35-video-category-v4`，字典版本保持 `tineco-names-20261116-v1`。编译与 render video 字典接受 `video_category`：`product` 为产品视频，`unboxing` 为开箱视频；旧调用缺失字段默认开箱，不按字幕中的产品名称推断任务类型。
+
+产品视频所有有效字幕底板统一 `#00000000`，包括普通文字、标题、正文、脚注、混合字体 PNG 和图层生成/存储/物化失败后的文字回退。人工底板被忽略但不删除，也不改变自动文字色；文字色、字体、字号和布局覆盖保持。近白背景推荐黑字，其余背景推荐白字，不新增描边或阴影。开箱视频保留自动底板和人工覆盖规则。
+
+图层缓存包含类型、有效底板策略与排版版本。平台预览传递当前类型，压制传递冻结任务快照类型；切换类型使当前布局和成片引用失效，但保留输入、译文、逐条样式、识别结果和旧历史图层。旧任务继续按原快照恢复轮询，无数据库迁移或历史成片重写。
+
+平台发布需同步后端契约、前端和固定 wheel，线上只拉平台仓库。回滚需同步恢复适配层、前端及对应旧 wheel；保留已有发布包。离线验收不发起真实模型或 MediaKit 调用，不代表真实供应商成片已验收。

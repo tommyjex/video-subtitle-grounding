@@ -23,8 +23,10 @@ from urllib.parse import urlsplit
 
 import httpx
 from PIL import ImageFont
+from .encoding import DEFAULT_CRF, ENCODING_POLICY_VERSION, apply_subtitle_output_policy, validate_crf
 
-__all__ = ["FONT_RESOURCES", "SubtitleLayoutError", "compile_subtitle_project"]
+__all__ = ["FONT_RESOURCES", "SubtitleLayoutError", "compile_subtitle_project",
+           "compile_text_subtitle_project"]
 
 SOURCE_HAN_REVISION = "a4f7cf94edfb9d7ffbdfc4841de276358bd7e0f2"
 _SOURCE_HAN_ROOT = (
@@ -39,7 +41,7 @@ DEFAULT_FONT = "CenturyGothic"
 FALLBACK_FONT_ID = "ALi_PuHui"
 DEFAULT_PANEL_COLOR = "#33333359"  # 35% opacity, 65% transparent.
 # Bump when automatic rendering changes so unchanged drafts can be rendered anew.
-LAYOUT_VERSION = "single-line-adaptive-panel35-product-font-v3"
+LAYOUT_VERSION = "single-line-png-text-default-background-v8"
 # SY_Black is the existing editor's Source Han Sans preset. Send an explicit,
 # versioned file URL, not the opaque preset ID whose binary version is unknown.
 FONT_RESOURCES = {
@@ -288,7 +290,17 @@ def _composite(foreground: str, background: str) -> str:
     return "#" + "".join(f"{channel:02X}" for channel in channels)
 
 
-def _colors(segment: dict, style: dict, warnings: list[str]) -> tuple[str, str, str]:
+def _video_category(video: dict) -> str:
+    category = video.get("video_category", "unboxing")
+    if category not in ("product", "unboxing"):
+        raise SubtitleLayoutError("invalid_video_category")
+    return category
+
+
+def _colors(
+    segment: dict, style: dict, warnings: list[str], *,
+    video_category: str = "unboxing",
+) -> tuple[str, str, str]:
     background = _color(segment.get("background_color"))
     if background is not None and len(background) != 7:
         background = None
@@ -304,7 +316,9 @@ def _colors(segment: dict, style: dict, warnings: list[str]) -> tuple[str, str, 
         else:
             recommended, panel = "#FFFFFF", DEFAULT_PANEL_COLOR
     text = recommended
-    if style.get("background_color") is not None:
+    if video_category == "product":
+        panel = "#00000000"
+    elif style.get("background_color") is not None:
         panel = _color(style["background_color"])
         if panel is None:
             raise SubtitleLayoutError("invalid_panel_color")
@@ -319,7 +333,8 @@ def _colors(segment: dict, style: dict, warnings: list[str]) -> tuple[str, str, 
         if _contrast(_composite(text, backdrop), backdrop) < 4.5:
             warnings.append("low_contrast")
     elif (
-        style.get("text_color") is not None or style.get("background_color") is not None
+        style.get("text_color") is not None
+        or (video_category != "product" and style.get("background_color") is not None)
     ):
         warnings.append("contrast_unverified")
     return recommended, _rgba(text), _rgba(panel)
@@ -402,6 +417,7 @@ def _layout(
     width: int,
     height: int,
     limits: tuple[int, int, bool],
+    vertical_limits: tuple[int, int] | None = None,
 ) -> tuple[dict, dict]:
     warnings: list[str] = []
     text = segment.get("translated_text")
@@ -449,6 +465,17 @@ def _layout(
     if estimated < 1:
         raise SubtitleLayoutError("bbox_below_font_minimum")
     upper = estimated
+    if segment.get("visual_role") == "footnote":
+        requested = style.get("font_size_px", 24)
+        requested = 24 if requested is None else _number(requested, "invalid_font_size")
+        if requested <= 0:
+            raise SubtitleLayoutError("invalid_font_size")
+        upper = max(1, math.floor(requested))
+        bbox = _footnote_box(bbox, sum(resource.font(upper).getmetrics()) + 4,
+                             vertical_limits or (0, height))
+        box_height = bbox[3] - bbox[1]
+        if box_height < sum(resource.font(upper).getmetrics()) + 4:
+            warnings.append("footnote_space_limited")
     if style.get("font_size_px") is not None:
         requested = _number(style["font_size_px"], "invalid_font_size")
         if requested <= 0:
@@ -486,7 +513,9 @@ def _layout(
         warnings.append("font_size_reduced")
     if effective < 12:
         warnings.append("font_size_small")
-    recommended, color, panel = _colors(segment, style, warnings)
+    recommended, color, panel = _colors(
+        segment, style, warnings, video_category=_video_category(video)
+    )
     transform = {
         "type": "transform",
         "pos_x": bbox[0],
@@ -504,7 +533,8 @@ def _layout(
         "font_size": effective,
         "font_color": color,
         "background_color": panel,
-        "bold": bool(missing) and fallback_bold,
+        # Non-headline text is always bold; headline keeps its existing file/preset policy.
+        "bold": segment.get("visual_role") != "headline" or (bool(missing) and fallback_bold),
         "italic": False,
         "underline": False,
         "line_max_width": -1,
@@ -538,11 +568,29 @@ def _layout(
     return element, summary
 
 
-def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
+def _footnote_box(box, desired, limits):
+    if desired <= box[3] - box[1]:
+        return box
+    top, bottom = limits
+    available = max(box[3] - box[1], bottom - top)
+    size = min(desired, available)
+    y = max(top, min(round((box[1] + box[3] - size) / 2), bottom - size))
+    return box[0], y, box[2], y + size
+
+
+def compile_text_subtitle_project(segments: list[dict], video: dict) -> dict:
+    """Explicit native-text fallback; never returns unresolved image layers."""
+    return compile_subtitle_project(segments, video, rasterize=False)
+
+
+def compile_subtitle_project(segments: list[dict], video: dict, *, rasterize=True) -> dict:
     """Return ``{project, layouts, warnings}``, without mutating input.
 
     video uses SubtitleVideoMetadata's display width/height, duration_ms, fps,
     rotation, has_audio, plus runtime-only source_url (signed clean asset URL).
+    Optional video_category is product (no subtitle panels) or unboxing (default).
+    Runtime render_mode is png (default) or text; rasterize=False forces native
+    text while retaining the requested mode for fallback reporting.
     Optional reference_duration_ms enables timeline mismatch diagnostics and
     Missing glyphs use the MediaKit ALi_PuHui preset; its local metrics and
     coverage are unverified, so the selected font supplies estimates only.
@@ -555,6 +603,15 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
     """
     if not isinstance(segments, list) or not isinstance(video, dict):
         raise SubtitleLayoutError("invalid_compiler_input")
+    try:
+        crf = validate_crf(video.get("crf", DEFAULT_CRF))
+    except ValueError:
+        raise SubtitleLayoutError("invalid_crf") from None
+    render_mode = video.get("render_mode", "png")
+    if render_mode not in ("png", "text"):
+        raise SubtitleLayoutError("invalid_render_mode")
+    rasterize = rasterize and render_mode == "png"
+    _video_category(video)
     if len(segments) > MAX_SEGMENTS:
         raise SubtitleLayoutError("segment_capacity_exceeded")
     from .product_names import contextual_segments
@@ -645,32 +702,61 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
             raise SubtitleLayoutError(exc.code, segment_id) from None
         entries.append((clipped_start, clipped_end, index, segment, box))
     limits = _horizontal_limits(entries, width)
+    vertical = {}
+    for start, end, _, segment, box in entries:
+        top, bottom = 0, height
+        for other_start, other_end, _, other, neighbor in entries:
+            if (other["segment_id"] == segment["segment_id"] or start >= other_end
+                    or other_start >= end or box[0] >= neighbor[2] or neighbor[0] >= box[2]):
+                continue
+            if neighbor[3] <= box[1]:
+                top = max(top, neighbor[3])
+            elif box[3] <= neighbor[1]:
+                bottom = min(bottom, neighbor[1])
+            else:
+                top, bottom = box[1], box[3]
+                break
+        vertical[segment["segment_id"]] = (top, bottom)
     layers = {}
     for clipped_start, clipped_end, index, segment, _ in entries:
         segment_id = segment["segment_id"]
         try:
             from .product_names import effective_mentions
 
-            if effective_mentions(segment):
+            if rasterize and effective_mentions(segment):
                 from .product_layout import compile_product_layout
 
                 try:
                     element, summary, layer = compile_product_layout(
-                        segment, video, width, height, limits[segment_id])
+                        segment, video, width, height, limits[segment_id],
+                        vertical[segment_id])
                     layers[layer["id"]] = layer
                 except SubtitleLayoutError:
-                    element, summary = _layout(segment, video, width, height, limits[segment_id])
+                    element, summary = _layout(segment, video, width, height, limits[segment_id],
+                                               vertical[segment_id])
                     summary["warnings"].append("product_layout_unavailable")
             else:
                 element, summary = _layout(
-                    segment, video, width, height, limits[segment_id]
+                    segment, video, width, height, limits[segment_id], vertical[segment_id]
                 )
+                if rasterize and not summary["missing_glyphs"]:
+                    from .raster import rasterize_text
+
+                    try:
+                        element, summary, layer = rasterize_text(element, summary)
+                        layers[layer["id"]] = layer
+                    except (SubtitleLayoutError, OSError, ValueError, OverflowError):
+                        summary["warnings"].append("subtitle_raster_unavailable")
         except SubtitleLayoutError as exc:
             raise SubtitleLayoutError(exc.code, segment_id) from None
         if (segment["start_ms"], segment["end_ms"]) != (clipped_start, clipped_end):
             summary["warnings"].append("time_clipped")
         element["target_time"] = [clipped_start, clipped_end]
         summary["target_time"] = [clipped_start, clipped_end]
+        summary["render_mode"] = render_mode
+        summary["effective_render_mode"] = "png" if element["type"] == "image" else "text"
+        if element["type"] == "text" and effective_mentions(segment):
+            summary["warnings"].append("text_product_font_fallback")
         layouts.append(summary)
         timed.append((clipped_start, clipped_end, index, element, summary))
         warnings.extend(f"{segment_id}:{warning}" for warning in summary["warnings"])
@@ -699,8 +785,10 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
         tracks[track_index + 1].append(element)
         summary["track_index"] = track_index + 1
     summaries_by_id = {summary["segment_id"]: summary for summary in layouts}
+    effective_modes = {summary["effective_render_mode"] for summary in layouts
+                       if not summary.get("excluded")}
     return {
-        "project": {
+        "project": apply_subtitle_output_policy({
             "canvas": {
                 "width": width,
                 "height": height,
@@ -711,12 +799,17 @@ def compile_subtitle_project(segments: list[dict], video: dict) -> dict:
                 "format": "mp4",
                 "fps": int(fps),
                 "disable_audio": not has_audio,
+                "codec": {"video_codec": "h264", "crf": 16},
             },
-        },
+        }, crf),
         "layouts": {
             segment["segment_id"]: summaries_by_id[segment["segment_id"]]
             for segment in segments
         },
         "warnings": warnings,
         "layers": layers,
+        "render_mode": render_mode,
+        "effective_render_mode": next(iter(effective_modes)) if len(effective_modes) == 1 else "mixed",
+        "layout_version": LAYOUT_VERSION,
+        "encoding_policy_version": ENCODING_POLICY_VERSION,
     }

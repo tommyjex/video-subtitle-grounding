@@ -3,6 +3,7 @@
 import hashlib
 import json
 import struct
+import tomllib
 from copy import deepcopy
 from pathlib import Path
 
@@ -15,6 +16,17 @@ from video_subtitle_grounding.mediakit import MediaKitMultiTrackClient
 
 FONT_PATH = Path(__file__).parent / "fixtures/subtitle_fonts/ABeeZee-Regular.ttf"
 HTTP_CLIENT = httpx.Client
+
+
+@pytest.fixture(autouse=True)
+def native_wire_contract(monkeypatch):
+    """This suite verifies the explicit native-text fallback wire contract.
+
+    Default PNG behavior and sizing are covered separately in test_raster.py.
+    """
+    compiler = layout.compile_subtitle_project
+    monkeypatch.setattr(layout, "compile_subtitle_project",
+                        lambda segments, video, **kwargs: compiler(segments, video, rasterize=False))
 
 
 @pytest.fixture(autouse=True)
@@ -50,6 +62,18 @@ def video(**overrides):
         "has_audio": True,
         **overrides,
     }
+
+
+@pytest.mark.parametrize("category", ["product", "unboxing"])
+@pytest.mark.parametrize("value", [7000, "7000000", None, "N/A", True, 7000.1])
+def test_crf_output_ignores_source_bitrate(category, value):
+    result = layout.compile_subtitle_project(
+        [segment()], video(video_category=category, video_bit_rate=value))
+    output = result["project"]["output"]
+    assert output["disable_audio"] is False and output["fps"] == 30
+    assert output["codec"] == {"video_codec": "h264", "crf": 16}
+    assert "source_video_bit_rate_unavailable" not in result["warnings"]
+    assert "video_bit_rate" not in output
 
 
 def segment(**overrides):
@@ -149,7 +173,7 @@ def test_background_policy_selects_plain_text_or_gray_panel(
     assert summary["recommended_text_color"] == expected
     assert summary["background_color"] == panel
     assert result["project"]["track"][1][0]["font_color"] == expected + "FF"
-    assert result["project"]["track"][1][0]["background_color"] == panel
+    assert "background_color" not in result["project"]["track"][1][0]
     assert "border_color" not in result["project"]["track"][1][0]
     assert "border_width" not in result["project"]["track"][1][0]
 
@@ -159,7 +183,8 @@ def test_unknown_background_is_white_with_translucent_gray(background):
     result = compile_one(background_color=background)
     element = result["project"]["track"][1][0]
     assert element["font_color"] == "#FFFFFFFF"
-    assert element["background_color"] == "#33333359"
+    assert "background_color" not in element
+    assert result["layouts"]["line-1"]["background_color"] == "#33333359"
     assert "background_unknown" in result["layouts"]["line-1"]["warnings"]
 
 
@@ -170,7 +195,7 @@ def test_explicit_panel_uses_white_text_and_can_be_disabled():
     result = compile_one(
         background_color="#888888", style={"background_color": "#00000000"}
     )
-    assert result["project"]["track"][1][0]["background_color"] == "#00000000"
+    assert "background_color" not in result["project"]["track"][1][0]
 
 
 def test_user_overrides_and_low_contrast():
@@ -188,7 +213,8 @@ def test_user_overrides_and_low_contrast():
     assert element["font_type"] == layout.CENTURY_GOTHIC_URL
     assert element["font_size"] <= 18
     assert element["font_color"] == "#FFFFFFFF"
-    assert element["background_color"] == "#FFFFFF80"
+    assert "background_color" not in element
+    assert summary["background_color"] == "#FFFFFF80"
     assert element["align_type"] == 2
     assert "low_contrast" in summary["warnings"]
     assert "font_url_version_unverified" in summary["warnings"]
@@ -333,13 +359,13 @@ def test_automatic_roles_are_resolved_per_line_in_same_block(font_http):
         )
         assert element["font_type"] == summary["measurement_font_type"] == expected
         assert summary["font_type"] == expected
-        assert element["bold"] is False
+        assert element["bold"] is (source.get("visual_role") != "headline")
         assert element["text"] == source["translated_text"]
         assert element["line_max_width"] == -1
         assert element["target_time"] == [source["start_ms"], source["end_ms"]]
         assert summary["alignment"] == source["alignment"]
         assert element["align_type"] == layout._ALIGNMENT[source["alignment"]]
-        assert element["background_color"] == summary["background_color"]
+        assert "background_color" not in element
         assert summary["background_color"] == {
             "#FFFFFF": "#00000000",
             "#000000": "#00000000",
@@ -351,9 +377,10 @@ def test_automatic_roles_are_resolved_per_line_in_same_block(font_http):
         )
         assert original == list(layout._bbox(source, 1280, 720))
         assert rendered[1::2] == original[1::2]
-        assert rendered[2] - rendered[0] > original[2] - original[0]
+        assert rendered[2] - rendered[0] >= original[2] - original[0]
         assert summary["measured_text_width_px"] <= rendered[2] - rendered[0]
-        assert "expanded_background_unverified" in summary["warnings"]
+        if rendered != original:
+            assert "expanded_background_unverified" in summary["warnings"]
     assert font_http == [layout.CENTURY_GOTHIC_BOLD_URL, layout.CENTURY_GOTHIC_URL]
 
 
@@ -368,7 +395,7 @@ def test_empty_manual_selection_restores_role_default(role, style):
     )
     assert result["layouts"]["line-1"]["measurement_font_type"] == expected
     assert result["project"]["track"][1][0]["font_type"] == expected
-    assert result["project"]["track"][1][0]["bold"] is False
+    assert result["project"]["track"][1][0]["bold"] is (role != "headline")
 
 
 @pytest.mark.parametrize(
@@ -389,7 +416,7 @@ def test_explicit_font_id_or_registered_url_wins(role, font_id, use_url, font_ht
     assert font_http == [url]
     assert result["layouts"]["line-1"]["measurement_font_type"] == url
     assert result["project"]["track"][1][0]["font_type"] == url
-    assert result["project"]["track"][1][0]["bold"] is False
+    assert result["project"]["track"][1][0]["bold"] is (role != "headline")
 
 
 @pytest.mark.parametrize("role", ["headline", "body", "footnote", None, "legacy"])
@@ -419,7 +446,7 @@ def test_missing_glyph_fallback_weight_preserves_manual_behavior(
     assert summary["font_sha256"] is None
     assert summary["measurement_font_sha256"] is not None
     assert element["font_type"] == "ALi_PuHui"
-    assert element["bold"] is (not manual_font and role == "headline")
+    assert element["bold"] is (role != "headline" or not manual_font)
     assert element["text"] == source["translated_text"]
     payload = MediaKitMultiTrackClient._normalize_submit_payload(
         project=result["project"], idempotency_key="role-font-fallback"
@@ -497,7 +524,72 @@ def test_role_font_is_selected_before_all_measurement(monkeypatch):
 
 
 def test_role_font_layout_version():
-    assert layout.LAYOUT_VERSION == "single-line-adaptive-panel35-product-font-v3"
+    assert layout.LAYOUT_VERSION == "single-line-png-text-default-background-v8"
+    assert layout.ENCODING_POLICY_VERSION == "configurable-crf-h264-v3"
+    from video_subtitle_grounding import __version__
+
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert project["project"]["version"] == __version__ == "0.3.8"
+
+
+@pytest.mark.parametrize("role", ["headline", "body", "footnote"])
+@pytest.mark.parametrize("background", [
+    "#FFFFFF", "#F5F5F5", "#F4F5F5", "#000000", "#101010",
+    "#111010", "#777777", "#0000FF", None, "invalid", "#FFFFFF99",
+])
+@pytest.mark.parametrize("panel", [None, "#33333359", "#FF0000FF", "#FFFFFF80", "#00000000", "ignored"])
+def test_product_policy_preserves_colors_styles_and_layout(role, background, panel):
+    source = segment(visual_role=role, background_color=background,
+                     style={"background_color": panel, "font_size_px": 18,
+                            "alignment": "right"})
+    before = deepcopy(source)
+    result = layout.compile_subtitle_project([source], video(video_category="product"))
+    plain = layout.compile_subtitle_project(
+        [{**source, "style": {**source["style"], "background_color": None}}],
+        video(video_category="product"))
+    assert source == before
+    assert result == plain
+    summary = result["layouts"]["line-1"]
+    element = result["project"]["track"][1][0]
+    expected = "#000000" if background in ("#FFFFFF", "#F5F5F5") else "#FFFFFF"
+    assert summary["recommended_text_color"] == expected
+    assert summary["text_color"] == element["font_color"] == expected + "FF"
+    assert summary["background_color"] == "#00000000"
+    assert "background_color" not in element
+    assert element["font_size"] <= 18 and element["align_type"] == 2
+    assert element["target_time"] == [100, 1000]
+    assert not {"border_color", "border_width", "shadow"} & element.keys()
+    assert "background_color" not in result["project"]["canvas"]
+
+
+@pytest.mark.parametrize("background", ["#FFFFFF", "#000000", "#777777", None])
+@pytest.mark.parametrize("panel", [None, "#FF0000FF", "#00000000", "#FFFFFF80"])
+def test_explicit_unboxing_is_identical_to_legacy(background, panel):
+    source = segment(background_color=background, style={"background_color": panel})
+    assert layout.compile_subtitle_project([source], video(video_category="unboxing")) == (
+        layout.compile_subtitle_project([source], video()))
+
+
+def test_product_manual_text_color_and_contrast_use_actual_background():
+    result = layout.compile_subtitle_project([segment(style={
+        "text_color": "#FFFFFF", "background_color": "#000000FF",
+        "font": "CenturyGothic", "font_size_px": 18,
+    })], video(video_category="product"))
+    summary = result["layouts"]["line-1"]
+    assert summary["text_color"] == "#FFFFFFFF"
+    assert summary["background_color"] == "#00000000"
+    assert "low_contrast" in summary["warnings"]
+    result = layout.compile_subtitle_project([segment(background_color=None, style={
+        "background_color": "#FFFFFF",
+    })], video(video_category="product"))
+    assert "contrast_unverified" not in result["layouts"]["line-1"]["warnings"]
+    assert "background_unknown" in result["layouts"]["line-1"]["warnings"]
+
+
+@pytest.mark.parametrize("category", [None, "", "other", 1, [], {}])
+def test_invalid_video_category_is_explicit(category):
+    with pytest.raises(layout.SubtitleLayoutError, match="invalid_video_category"):
+        layout.compile_subtitle_project([segment()], video(video_category=category))
 
 
 def test_explicit_japanese_font_is_preserved():

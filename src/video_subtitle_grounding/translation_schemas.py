@@ -1,6 +1,8 @@
 """HTTP input contracts; SDK callers can retain their existing draft dictionaries."""
 
-from pydantic import BaseModel, Field, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, StrictInt, model_validator
 
 
 class TranslationRecord(BaseModel):
@@ -35,4 +37,6 @@ class SubtitleTranslateRequest(SubtitleProductRecognitionRequest):
 class SubtitleRenderRequest(BaseModel):
     segments: list[dict] = Field(min_length=1, max_length=500)
     video: dict
+    render_mode: Literal["png", "text"] = "png"
+    crf: StrictInt = Field(default=16, ge=0, le=30)
     idempotency_key: str = Field(min_length=1, max_length=256)

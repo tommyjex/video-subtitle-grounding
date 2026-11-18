@@ -22,7 +22,7 @@ from .schemas import (
     VideoSubtitleGroundingUsage,
 )
 
-VIDEO_SUBTITLE_GROUNDING_PROMPT = (
+LEGACY_VIDEO_SUBTITLE_GROUNDING_PROMPT = (
     "逐帧检查整个视频画面，穷举识别所有后期叠加或用于解释画面内容的可见文字，"
     "并返回每段文字连续可见的时间区间和位置。目标文字包括对话字幕、标题、说明文字、"
     "产品名称、功能卖点，以及放置在产品、部件或物体附近的标注标签。文字可能同时出现"
@@ -53,6 +53,15 @@ VIDEO_SUBTITLE_GROUNDING_PROMPT = (
     "它不是文字颜色，也不是待绘制的字幕底板颜色。同一片段背景变化时取代表值，"
     "复杂或无法可靠估计时返回 null，不强行伪造颜色。"
     "最多返回 500 条。严格按 JSON Schema 输出，不要输出 Markdown、解释或额外字段。"
+)
+
+VIDEO_SUBTITLE_GROUNDING_PROMPT = LEGACY_VIDEO_SUBTITLE_GROUNDING_PROMPT + (
+    "独立品牌 Logo 与固定品牌标语不属于字幕，产品视频、开箱视频及所有其他调用均应用"
+    "此规则，出现位置不影响排除。Tineco 图形 Logo 即使识别为文字也不得输出。固定标语"
+    " Live Easy. Enjoy Life. 不得输出，包括动画渐显、单独出现、分成多视觉行或重复出现。"
+    "不要单凭含品牌名就排除产品说明：Tineco FLOOR ONE S7、Powered by Tineco、型号、"
+    "规格和普通功能说明仍应提取。继续扫描全部其他时段和同一画面的有效标题、卖点、"
+    "说明与脚注，不因遇到品牌收尾画面而提前结束。"
 )
 
 _BBOX_JSON_PATTERN = r"^<bbox>[0-9]{1,3} [0-9]{1,3} [0-9]{1,3} [0-9]{1,3}</bbox>$"
@@ -227,6 +236,8 @@ class VideoSubtitleGroundingProviderError(RuntimeError):
 
 
 class ModelArkVideoSubtitleGroundingAdapter:
+    extraction_prompt = VIDEO_SUBTITLE_GROUNDING_PROMPT
+
     """Isolated Files/Responses adapter for the subtitle grounding experiment."""
 
     def __init__(
@@ -399,7 +410,7 @@ class ModelArkVideoSubtitleGroundingAdapter:
                         "content": [
                             {
                                 "type": "input_text",
-                                "text": VIDEO_SUBTITLE_GROUNDING_PROMPT,
+                                "text": self.extraction_prompt,
                             },
                             {
                                 "type": "input_video",

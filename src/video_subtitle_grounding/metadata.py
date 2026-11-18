@@ -22,6 +22,8 @@ class VideoDisplayMetadata:
     rotation: Literal[0, 90, 180, 270]
     container: str
     codec: str
+    video_bit_rate: int | None = None
+    video_bit_rate_probed: bool = False
 
     @property
     def duration_ms(self) -> int:
@@ -59,7 +61,22 @@ def parse_video_display_metadata(
         display_width=height if rotation in {90, 270} else width,
         display_height=width if rotation in {90, 270} else height,
         duration_seconds=duration, rotation=rotation, container=container, codec=codec,
+        video_bit_rate=parse_video_bit_rate(video.get("bit_rate")),
+        video_bit_rate_probed=True,
     )
+
+
+def parse_video_bit_rate(value: object) -> int | None:
+    """FFprobe video stream bit_rate is bps; never substitute container bitrate."""
+    if type(value) is int:
+        return value if value > 0 else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        try:
+            parsed = int(value)
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
 
 
 def _positive_int(value: object, label: str) -> int:
