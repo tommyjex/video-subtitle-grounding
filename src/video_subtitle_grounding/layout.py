@@ -41,7 +41,10 @@ DEFAULT_FONT = "CenturyGothic"
 FALLBACK_FONT_ID = "ALi_PuHui"
 DEFAULT_PANEL_COLOR = "#33333359"  # 35% opacity, 65% transparent.
 # Bump when automatic rendering changes so unchanged drafts can be rendered anew.
-LAYOUT_VERSION = "single-line-png-text-default-background-v8"
+LAYOUT_VERSION = "single-line-footnote14-right1-v10"
+FOOTNOTE_MIN_FONT_SIZE = 14
+FOOTNOTE_HORIZONTAL_MARGIN_RATIO = 0.04
+FOOTNOTE_RIGHT_MARGIN_RATIO = 0.01
 # SY_Black is the existing editor's Source Han Sans preset. Send an explicit,
 # versioned file URL, not the opaque preset ID whose binary version is unknown.
 FONT_RESOURCES = {
@@ -360,12 +363,19 @@ def _largest_size(resource: _FontResource, upper: int, fits) -> int:
 def _horizontal_limits(
     entries: list[tuple[int, int, int, dict, tuple[int, int, int, int]]],
     width: int,
+    height: int | None = None,
 ) -> dict[str, tuple[int, int, bool]]:
     """Reserve half each original gap for simultaneous, vertically adjacent boxes."""
     limits = {}
     margin = math.ceil(width * 0.05)
     for start, end, _, segment, box in entries:
-        left, right = min(box[0], margin), max(box[2], width - margin)
+        bottom_note = height is not None and _is_bottom_footnote(segment, box, height)
+        note_margin = math.ceil(width * FOOTNOTE_HORIZONTAL_MARGIN_RATIO)
+        note_right = width - math.ceil(width * FOOTNOTE_RIGHT_MARGIN_RATIO)
+        left, right = (
+            (note_margin, note_right)
+            if bottom_note else (min(box[0], margin), max(box[2], width - margin))
+        )
         overlap = False
         for other_start, other_end, _, other, neighbor in entries:
             if other["segment_id"] == segment["segment_id"]:
@@ -381,11 +391,48 @@ def _horizontal_limits(
             else:
                 overlap = True
         limits[segment["segment_id"]] = (
-            box[0] if overlap else left,
-            box[2] if overlap else right,
+            max(note_margin, box[0]) if bottom_note and overlap else box[0] if overlap else left,
+            min(note_right, box[2]) if bottom_note and overlap else box[2] if overlap else right,
             overlap,
         )
     return limits
+
+
+def _is_bottom_footnote(segment: dict, box: tuple[int, int, int, int], height: int) -> bool:
+    return segment.get("visual_role") == "footnote" and (box[1] + box[3]) / 2 >= height * 0.85
+
+
+def _resolve_alignment(segment, style, box, height, warnings):
+    bottom_note = _is_bottom_footnote(segment, box, height)
+    default = "right" if bottom_note else "center"
+    alignment = style.get("alignment") or (
+        default if bottom_note else segment.get("alignment") or default
+    )
+    if not isinstance(alignment, str) or alignment not in _ALIGNMENT:
+        warnings.append("alignment_defaulted")
+        return default
+    return alignment
+
+
+def _footnote_render_box(segment, box, width, height, limits):
+    if not _is_bottom_footnote(segment, box, height):
+        return box
+    margin = math.ceil(width * FOOTNOTE_HORIZONTAL_MARGIN_RATIO)
+    right_edge = width - math.ceil(width * FOOTNOTE_RIGHT_MARGIN_RATIO)
+    left, right = max(margin, limits[0]), min(right_edge, limits[1])
+    if right <= left:
+        raise SubtitleLayoutError("text_cannot_fit_at_minimum_font", segment["segment_id"])
+    return left, box[1], right, box[3]
+
+
+def _footnote_target_size(style, warnings):
+    requested = style.get("font_size_px")
+    requested = 24 if requested is None else _number(requested, "invalid_font_size")
+    if requested <= 0:
+        raise SubtitleLayoutError("invalid_font_size")
+    if requested < FOOTNOTE_MIN_FONT_SIZE:
+        warnings.append("font_size_minimum_applied")
+    return max(FOOTNOTE_MIN_FONT_SIZE, math.floor(requested))
 
 
 def _expand_box(
@@ -430,11 +477,8 @@ def _layout(
     style = segment.get("style") or {}
     if not isinstance(style, Mapping):
         raise SubtitleLayoutError("invalid_style")
-    alignment = style.get("alignment") or segment.get("alignment") or "center"
-    if not isinstance(alignment, str) or alignment not in _ALIGNMENT:
-        alignment = "center"
-        warnings.append("alignment_defaulted")
     bbox = _bbox(segment, width, height)
+    alignment = _resolve_alignment(segment, style, bbox, height, warnings)
     original_bbox = bbox
     box_height = bbox[3] - bbox[1]
     url, fallback_bold = _resolve_font(segment, style)
@@ -465,18 +509,16 @@ def _layout(
     if estimated < 1:
         raise SubtitleLayoutError("bbox_below_font_minimum")
     upper = estimated
-    if segment.get("visual_role") == "footnote":
-        requested = style.get("font_size_px", 24)
-        requested = 24 if requested is None else _number(requested, "invalid_font_size")
-        if requested <= 0:
-            raise SubtitleLayoutError("invalid_font_size")
-        upper = max(1, math.floor(requested))
+    footnote = segment.get("visual_role") == "footnote"
+    if footnote:
+        upper = _footnote_target_size(style, warnings)
+        bbox = _footnote_render_box(segment, bbox, width, height, limits)
         bbox = _footnote_box(bbox, sum(resource.font(upper).getmetrics()) + 4,
                              vertical_limits or (0, height))
         box_height = bbox[3] - bbox[1]
         if box_height < sum(resource.font(upper).getmetrics()) + 4:
             warnings.append("footnote_space_limited")
-    if style.get("font_size_px") is not None:
+    if not footnote and style.get("font_size_px") is not None:
         requested = _number(style["font_size_px"], "invalid_font_size")
         if requested <= 0:
             raise SubtitleLayoutError("invalid_font_size")
@@ -503,8 +545,8 @@ def _layout(
             and sum(font.getmetrics()) <= box_height
         ),
     )
-    if effective < 1:
-        # Never truncate, wrap or stretch to conceal text that cannot fit at 1px.
+    if effective < (FOOTNOTE_MIN_FONT_SIZE if footnote else 1):
+        # Keep complete single-line text; do not hide an unreadable fit or clip it.
         raise SubtitleLayoutError("text_cannot_fit_at_minimum_font")
     font = resource.font(effective)
     if effective < upper or (
@@ -701,11 +743,17 @@ def compile_subtitle_project(segments: list[dict], video: dict, *, rasterize=Tru
         except SubtitleLayoutError as exc:
             raise SubtitleLayoutError(exc.code, segment_id) from None
         entries.append((clipped_start, clipped_end, index, segment, box))
-    limits = _horizontal_limits(entries, width)
+    limits = _horizontal_limits(entries, width, height)
     vertical = {}
     for start, end, _, segment, box in entries:
+        # Horizontal reflow can bring a previously distant caption into the
+        # footnote's column; reserve it before growing the footnote vertically.
+        box = _footnote_render_box(segment, box, width, height, limits[segment["segment_id"]])
         top, bottom = 0, height
         for other_start, other_end, _, other, neighbor in entries:
+            neighbor = _footnote_render_box(
+                other, neighbor, width, height, limits[other["segment_id"]]
+            )
             if (other["segment_id"] == segment["segment_id"] or start >= other_end
                     or other_start >= end or box[0] >= neighbor[2] or neighbor[0] >= box[2]):
                 continue

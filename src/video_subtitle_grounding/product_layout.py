@@ -71,10 +71,7 @@ def compile_product_layout(segment, video, width, height, limits, vertical_limit
                                  "font_type": actual.url, "font_sha256": actual.sha256})
     runs = expanded
     original = base._bbox(segment, width, height)
-    alignment = style.get("alignment") or segment.get("alignment") or "center"
-    if alignment not in {"left", "center", "right"}:
-        alignment = "center"
-        warnings.append("alignment_defaulted")
+    alignment = base._resolve_alignment(segment, style, original, height, warnings)
     box_height = original[3] - original[1]
 
     def measure(size):
@@ -106,18 +103,16 @@ def compile_product_layout(segment, video, width, height, limits, vertical_limit
         raise base.SubtitleLayoutError("bbox_below_font_minimum")
     estimated = upper
     box_origin = original
-    if segment.get("visual_role") == "footnote":
-        requested = style.get("font_size_px")
-        requested = 24 if requested is None else base._number(requested, "invalid_font_size")
-        if requested <= 0:
-            raise base.SubtitleLayoutError("invalid_font_size")
-        upper = max(1, math.floor(requested))
-        box_origin = base._footnote_box(original, math.ceil(measure(upper)[1]),
+    footnote = segment.get("visual_role") == "footnote"
+    if footnote:
+        upper = base._footnote_target_size(style, warnings)
+        box_origin = base._footnote_render_box(segment, original, width, height, limits)
+        box_origin = base._footnote_box(box_origin, math.ceil(measure(upper)[1]),
                                         vertical_limits or (0, height))
         box_height = box_origin[3] - box_origin[1]
         if measure(upper)[1] > box_height:
             warnings.append("footnote_space_limited")
-    if style.get("font_size_px") is not None:
+    if not footnote and style.get("font_size_px") is not None:
         requested = base._number(style["font_size_px"], "invalid_font_size")
         if requested <= 0:
             raise base.SubtitleLayoutError("invalid_font_size")
@@ -127,7 +122,7 @@ def compile_product_layout(segment, video, width, height, limits, vertical_limit
     box_width = box[2] - box[0]
     effective = largest_fitting(upper, lambda size: measure(size)[0] <= box_width
                                 and measure(size)[1] <= box_height)
-    if not effective:
+    if effective < (base.FOOTNOTE_MIN_FONT_SIZE if footnote else 1):
         raise base.SubtitleLayoutError("text_cannot_fit_at_minimum_font")
     if box != original:
         warnings.extend(["bbox_expanded", "expanded_background_unverified"])

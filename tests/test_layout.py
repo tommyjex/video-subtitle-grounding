@@ -524,12 +524,12 @@ def test_role_font_is_selected_before_all_measurement(monkeypatch):
 
 
 def test_role_font_layout_version():
-    assert layout.LAYOUT_VERSION == "single-line-png-text-default-background-v8"
+    assert layout.LAYOUT_VERSION == "single-line-footnote14-right1-v10"
     assert layout.ENCODING_POLICY_VERSION == "configurable-crf-h264-v3"
     from video_subtitle_grounding import __version__
 
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
-    assert project["project"]["version"] == __version__ == "0.3.8"
+    assert project["project"]["version"] == __version__ == "0.3.11"
 
 
 @pytest.mark.parametrize("role", ["headline", "body", "footnote"])

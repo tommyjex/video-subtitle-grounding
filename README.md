@@ -1,6 +1,12 @@
 # Video subtitles — 提取、翻译与压制
 
-基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.3.8**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+基于火山方舟 Ark 和 MediaKit 的独立视频字幕后端。扫描整帧文字，提取时间与位置，按视觉行翻译，再将译文压制到无字幕视频。当前版本 **0.3.11**，仓库与 Python 包名保持 `video-subtitle-grounding`。它不依赖 AD-Creativity 的数据库、资产库或前端。
+
+0.3.11 的底部脚注自动右对齐，左侧安全边距保持 4%，右侧留白改为画面宽度的 1%（向上取整；1920px 视频的渲染区域为 x=77..1900）。自动模式不再沿用识别结果的对齐方式，有效的人工 `style.alignment` 仍优先。PNG、原生 Text、混合字体及 Text 回退共用规则；保留相邻字幕避让，右侧存在邻居时向内收缩。目标字号 24px、最终下限 14px 及完整单行规则保持。底部脚注仍按原文字框中心位于画面最后 15% 判断。排版版本为 `single-line-footnote14-right1-v10`，旧成片需要重新排版、压制。
+
+0.3.10 的底部脚注允许使用左右各留 4% 的整行安全区域，默认目标 24px，最终字号下限 14px；人工字号低于 14px 时归一为 14px 并说明。普通文字、PNG 和产品混合字体使用同一规则，保留相邻字幕避让。完整单行在 14px 下仍无法放入安全区域时返回可定位的 `text_cannot_fit_at_minimum_font`，不裁切或静默缩小。底部脚注按原文字框中心位于画面最后 15% 判断；其他位置的文字保留空间语义。排版版本为 `single-line-footnote14-fullwidth-v9`，旧成片保持，新计算/压制使用新版本身份。
+
+0.3.9 在当前字幕提取 VLM 提示词中追加“小字与贴边字幕的强制检查流程”：逐镜头扫描全下边缘及四周，重点复查底部 15% 和最后 5%，独立提取广告脚注及限定条件，交叉读取可见帧并检查覆盖情况。输出字段及 JSON Schema 保持，冻结的旧品牌策略提示词保持。提示词更新不代表真实识别质量已经验收。
 
 0.3.8 支持 `render_mode=png|text`，默认 PNG；CRF 为严格整数 0–30，默认 16。两路及 PNG 失败后的 Text 回退统一提交 H.264 与所选 CRF，省略 `video_bit_rate`、`canvas.background_color` 及原生 Text 的 `background_color`，使用接口默认值。PNG 内部自动/人工底板保持，使用真实字体 4 倍采样，自动脚注为 24px；Text 不生成 PNG 图层，保留非 headline 加粗，产品混排整行字体回退返回 `text_product_font_fallback`。HTTP render 顶层 `crf` 是权威输入；SDK 编译/提交通过 runtime video 的 `crf` 传入。排版版本为 `single-line-png-text-default-background-v8`，编码策略为 `configurable-crf-h264-v3`。接口默认底色、真实成片质量与文件大小仍需单独验收。
 
@@ -117,9 +123,9 @@ curl http://127.0.0.1:8010/v1/subtitles/extract \
 ## Docker
 
 ```bash
-docker build -t video-subtitle-grounding:0.3.8 .
+docker build -t video-subtitle-grounding:0.3.11 .
 docker run --rm --env-file .env -p 127.0.0.1:8010:8010 \
-  video-subtitle-grounding:0.3.8
+  video-subtitle-grounding:0.3.11
 ```
 
 容器采用非 root 用户，包含 FFprobe。本次拆分未执行 Docker 镜像构建或生产部署。
@@ -135,7 +141,7 @@ python -m build
 
 所有默认测试使用离线 provider 和 HTTP fixture，不访问业务数据库，不执行付费模型调用。排版测试使用 OFL 字体与真实 FreeType 测量。测试证明契约、清理、鉴权和兼容性，不代替真实 OCR、翻译和成片渲染质量验收。
 
-修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。0.3.8 对应平台依赖 `video_subtitle_grounding-0.3.8-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。先构建 sdist，再从 sdist 构建 wheel；源码导出与 sdist 保持字节一致。
+修改行为或接口时提升 `pyproject.toml` 和 `__init__.py` 版本；API 版本引用包版本。消费者安装固定版本。0.3.11 对应平台依赖 `video_subtitle_grounding-0.3.11-py3-none-any.whl`，发布步骤见 `docs/platform-integration.md`。先构建 sdist，再从 sdist 构建 wheel；源码导出与 sdist 保持字节一致。
 
 ## 来源与边界
 
